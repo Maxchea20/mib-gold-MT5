@@ -1,0 +1,278 @@
+{
+  "project_name": "mib-gold",
+  "archetype": "THE_PERFORMANCE_PRO_TACTICAL_TERMINAL",
+  "app_type": "desktop_trading_terminal",
+  "theme": "dark_obsidian_terminal",
+  "concept": "Tauri desktop gold (XAUUSD) trading terminal blending Swiss technical precision, Bloomberg/institutional data density, and military radar ergonomics.",
+  "target_audience": "Algorithmic gold traders, quantitative prop traders, automated layer execution specialists",
+  "colors": {
+    "background_base": "#07090E",
+    "background_surface": "#0C1017",
+    "background_surface_elevated": "#121824",
+    "background_panel_header": "#0E141F",
+    "border_hairline": "#1F2937",
+    "border_active": "#374151",
+    "border_gold_accent": "rgba(234, 179, 8, 0.4)",
+    "gold_primary": "#EAB308",
+    "gold_amber": "#F59E0B",
+    "gold_glow": "rgba(234, 179, 8, 0.15)",
+    "bull_green": "#10B981",
+    "bull_green_bg": "rgba(16, 185, 129, 0.12)",
+    "bull_green_border": "rgba(16, 185, 129, 0.3)",
+    "bear_red": "#EF4444",
+    "bear_red_bg": "rgba(239, 68, 68, 0.12)",
+    "bear_red_border": "rgba(239, 68, 68, 0.3)",
+    "neutral_cyan": "#06B6D4",
+    "warning_orange": "#F97316",
+    "text_primary": "#F3F4F6",
+    "text_secondary": "#9CA3AF",
+    "text_muted": "#6B7280",
+    "text_gold": "#FDE047",
+    "news_gate_bg": "rgba(239, 68, 68, 0.18)",
+    "news_gate_border": "#DC2626"
+  },
+  "typography": {
+    "heading_font": "JetBrains Mono, Roboto Mono, monospace",
+    "body_font": "IBM Plex Sans, Inter, -apple-system, sans-serif",
+    "mono_numeric_font": "JetBrains Mono, Menlo, Monaco, Consolas, monospace",
+    "font_scale": {
+      "display_metric": "text-2xl font-bold tracking-tight font-mono",
+      "h1_screen_title": "text-xl font-bold tracking-tight uppercase",
+      "h2_panel_title": "text-xs font-semibold uppercase tracking-wider text-muted-foreground",
+      "h3_card_header": "text-sm font-semibold tracking-tight",
+      "body_dense": "text-xs font-normal leading-tight",
+      "metric_pill": "text-[11px] font-mono font-medium",
+      "micro_label": "text-[10px] uppercase tracking-widest font-mono text-gray-400"
+    }
+  },
+  "layout_architecture": {
+    "viewport": "h-screen w-screen overflow-hidden flex flex-col bg-[#07090E] text-gray-100 select-none",
+    "top_status_bar": {
+      "height": "h-12",
+      "style": "bg-[#0C1017] border-b border-[#1F2937] px-4 flex items-center justify-between z-40",
+      "components": [
+        "Brand identity (MIB-GOLD v2.4 + MT5 Bridge indicator)",
+        "Live Account Equity ($124,850.40)",
+        "Today's Realized + Floating P&L (+ $3,420.50 / +2.82% R)",
+        "Current Risk Used Gauge bar (4.2% / 10.0% max limit)",
+        "Active Layers count pill (3 layers / 1.80 lots)",
+        "Spread / Session timer pill (NY Overlap / 0.12 pip spread)",
+        "Screen switcher tabs (Terminal, Trade Journal, Backtest Lab)"
+      ]
+    },
+    "news_gate_banner": {
+      "condition": "Active when high impact USD/FOMC/CPI event is within blocked window (<45m)",
+      "style": "bg-red-950/40 border-y border-red-500/40 px-4 py-1.5 flex items-center justify-between text-xs font-mono text-red-300",
+      "elements": [
+        "High impact event ticker with flashing radar pulse",
+        "Countdown timer to release window: 'US Non-Farm Payrolls in 00:24:18'",
+        "Execution lock status: 'NEWS GATE ACTIVE: All new market orders blocked | Protective SL trailed to +1.2R'",
+        "Override toggle (Simulation/Bypass mode)"
+      ]
+    },
+    "main_dashboard_layout": {
+      "type": "3-zone dense terminal grid",
+      "left_zone_chart": "flex-1 flex flex-col min-w-0 border-r border-[#1F2937] bg-[#07090E]",
+      "chart_toolbar": "h-10 bg-[#0C1017] border-b border-[#1F2937] px-3 flex items-center justify-between",
+      "timeframes": ["5M", "15M", "1H", "4H", "1D"],
+      "chart_view": "Realtime Canvas/SVG Candlestick engine with Volume Profile, Layer Entry markers (L1, L2, L3), Trailing TP/SL dynamic ray overlays, ATR bands, and Order Blocks",
+      "bottom_layers_panel": "h-56 bg-[#0C1017] border-t border-[#1F2937] flex flex-col overflow-hidden",
+      "right_zone_agent_board": "w-96 flex flex-col bg-[#0C1017] border-l border-[#1F2937] overflow-y-auto"
+    }
+  },
+  "ten_engine_agent_board_spec": {
+    "title": "MIB 10-ENGINE CONSENSUS MATRIX",
+    "description": "Real-time multi-agent signal validation engine scoring gold directional probability on bar close",
+    "engines": [
+      {
+        "id": "eng_1_liq_sweep",
+        "name": "E1: Liquidity Sweep Hunter",
+        "type": "Order Flow / SMC",
+        "signal": "BULLISH",
+        "confidence": 88,
+        "reason": "Swept Asia session low at 2,341.20 with rapid tick-rejection wick"
+      },
+      {
+        "id": "eng_2_fvgap",
+        "name": "E2: Fair Value Gap Reloader",
+        "type": "Price Action",
+        "signal": "BULLISH",
+        "confidence": 92,
+        "reason": "1H Bullish FVG (2,343.80 - 2,346.10) tapped and holding cleanly"
+      },
+      {
+        "id": "eng_3_vol_profile",
+        "name": "E3: Volume Profile VPOC",
+        "type": "Volume Delta",
+        "signal": "NEUTRAL_BULL",
+        "confidence": 74,
+        "reason": "Delta turn positive (+4.8k lots) above Point of Control 2,344.50"
+      },
+      {
+        "id": "eng_4_dxy_macro",
+        "name": "E4: DXY & Yield Correlator",
+        "type": "Macro Intermarket",
+        "signal": "BULLISH",
+        "confidence": 81,
+        "reason": "US Dollar Index breaking below 104.10; US 10Y yield softening"
+      },
+      {
+        "id": "eng_5_layer_optimizer",
+        "name": "E5: Pyramiding Layer Allocator",
+        "type": "Execution Risk",
+        "signal": "ACTIVE_SCALE",
+        "confidence": 95,
+        "reason": "Layer 1 at +1.5R; risk locked. Layer 2 trigger primed at 2,348.00"
+      },
+      {
+        "id": "eng_6_london_breakout",
+        "name": "E6: Session Range Momentum",
+        "type": "Volatility Regime",
+        "signal": "BULLISH",
+        "confidence": 85,
+        "reason": "London session expansion candle closed outside Asia 15-pip box"
+      },
+      {
+        "id": "eng_7_dynamic_atr_sl",
+        "name": "E7: Adaptive Trailing Guard",
+        "type": "Risk Sentry",
+        "signal": "PROTECT_TRAIL",
+        "confidence": 90,
+        "reason": "Trailing SL ratchet updated to 2,342.80 (lock guaranteed +$1,120)"
+      },
+      {
+        "id": "eng_8_orderblock",
+        "name": "E8: Institutional OB Tracker",
+        "type": "Smart Money",
+        "signal": "BULLISH",
+        "confidence": 78,
+        "reason": "4H Bullish OB mitigation complete with high volume confirmation"
+      },
+      {
+        "id": "eng_9_sentiment_cot",
+        "name": "E9: Retail Sentiment Squeeze",
+        "type": "Contrarian Flow",
+        "signal": "BULLISH",
+        "confidence": 83,
+        "reason": "76% retail short positioning; extreme squeeze velocity imminent"
+      },
+      {
+        "id": "eng_10_news_sentry",
+        "name": "E10: High-Impact Macro Sentry",
+        "type": "Event Filter",
+        "signal": "CLEAR_GATE",
+        "confidence": 99,
+        "reason": "No high-impact USD events for next 42 mins; gate green for layers"
+      }
+    ]
+  },
+  "active_layers_panel_spec": {
+    "title": "ACTIVE XAUUSD LAYERS (PYRAMID BATCH #4092)",
+    "table_columns": [
+      "Layer ID & Timestamp",
+      "Direction & Lots",
+      "Entry Price",
+      "Current Floating P&L ($ Plain English)",
+      "R-Multiple (+R)",
+      "SL Distance (Pips & Price)",
+      "Dynamic Trailing TP Level",
+      "Status & Actions (Lock Break-even, Close Layer, Re-weight)"
+    ],
+    "sample_layers": [
+      {
+        "layer_id": "L1-0941",
+        "timestamp": "09:41:02",
+        "type": "LONG",
+        "lots": 0.80,
+        "entry_price": 2342.50,
+        "current_price": 2351.20,
+        "pnl_usd": "+$696.00 (+2.97%)",
+        "r_multiple": "+2.48 R",
+        "sl_price": 2345.50,
+        "sl_distance": "+30 pips locked",
+        "tp_level": 2358.00,
+        "status": "RUNNER_LOCKED"
+      },
+      {
+        "layer_id": "L2-1005",
+        "timestamp": "10:05:44",
+        "type": "LONG",
+        "lots": 0.60,
+        "entry_price": 2346.80,
+        "current_price": 2351.20,
+        "pnl_usd": "+$264.00 (+1.12%)",
+        "r_multiple": "+1.25 R",
+        "sl_price": 2345.50,
+        "sl_distance": "-13 pips (BE safe)",
+        "tp_level": 2358.00,
+        "status": "PROFIT_PROTECTED"
+      },
+      {
+        "layer_id": "L3-1022",
+        "timestamp": "10:22:15",
+        "type": "LONG",
+        "lots": 0.40,
+        "entry_price": 2349.10,
+        "current_price": 2351.20,
+        "pnl_usd": "+$84.00 (+0.36%)",
+        "r_multiple": "+0.60 R",
+        "sl_price": 2345.50,
+        "sl_distance": "-36 pips (Shared Base SL)",
+        "tp_level": 2362.50,
+        "status": "ACTIVE_EXPANSION"
+      }
+    ]
+  },
+  "trade_journal_screen_spec": {
+    "title": "AUDIT JOURNAL & 10-ENGINE JUSTIFICATION CARDS",
+    "features": [
+      "Filterable by Engine vote leader, Direction (Long/Short), Session (London/NY/Asia), Outcome (Win/Loss/BE)",
+      "Summary stats: Win Rate 71.4%, Profit Factor 2.84, Avg R 2.18R, Total Closed Gain +$48,920.00",
+      "Interactive Expandable Trade Cards: When clicked, expands into full 10-agent vote breakdown matrix, entry trigger chart snapshot, execution latency, slippage, and plain-English post-mortem justification",
+      "Export capability (CSV, JSON, MT5 statement sync)"
+    ]
+  },
+  "backtest_lab_screen_spec": {
+    "title": "MIB HISTORICAL REPLAY & ATTRIBUTION LAB",
+    "features": [
+      "Time scrubber slider with play/pause/step-frame speed controls (1x, 5x, 20x, 100x)",
+      "Interactive Equity Curve with Drawdown underwater chart (Recharts dual area/line)",
+      "Per-Engine Performance Attribution Matrix: Win rate contribution, Sharpe contribution, Alpha generation per engine",
+      "Historical bar-by-bar Agent Consensus replay (showing exactly how all 10 engines voted at each historical candle)",
+      "Monte Carlo simulation stress-test widget for maximum layer drawdown estimation"
+    ]
+  },
+  "visual_enhancers": {
+    "grid_borders": "1px solid #1F2937 terminal borders with subtle glowing active headers",
+    "tactical_badges": "Square sharp badges with mono text, 1px borders, and colored status pips",
+    "candlestick_engine": "High frame rate SVG/HTML5 interactive chart with crosshair coordinates, bid/ask spread line, and layer entry markers",
+    "audio_visual_cues": "Subtle flashing border indicator when News Gate turns red or when consensus reaches >90%",
+    "zero_fluff": "No generic rounded pastel cards. Pure tactical command-center obsidian interface with high APCA contrast."
+  },
+  "test_id_conventions": {
+    "status_bar": "data-testid='top-status-bar'",
+    "equity_display": "data-testid='metric-account-equity'",
+    "pnl_display": "data-testid='metric-today-pnl'",
+    "risk_gauge": "data-testid='metric-risk-gauge'",
+    "news_gate": "data-testid='news-gate-banner'",
+    "chart_container": "data-testid='gold-chart-container'",
+    "timeframe_btn": "data-testid='timeframe-btn-{tf}'",
+    "agent_board": "data-testid='agent-board-container'",
+    "agent_card": "data-testid='agent-card-{engineId}'",
+    "layers_table": "data-testid='active-layers-panel'",
+    "layer_row": "data-testid='layer-row-{layerId}'",
+    "nav_tab": "data-testid='nav-tab-{screenName}'",
+    "journal_card": "data-testid='journal-trade-card-{tradeId}'",
+    "backtest_scrubber": "data-testid='backtest-time-scrubber'"
+  },
+  "instructions_to_main_agent": [
+    "Implement the full 3-screen desktop trading application: 1) Live Terminal (Default), 2) Trade Journal / Audit, 3) Backtest & Attribution Lab.",
+    "Build a rich simulated real-time data engine with live tick updates, candlestick generation, dynamic floating P&L calculations, and interactive order layer management.",
+    "Ensure all 10 AI trading engines are fully rendered with confidence progress bars, color-coded directional bias (Green for Bullish, Red for Bearish, Cyan/Amber for Protect/Scale), and specific analytical reasoning.",
+    "Implement the high-impact News Gate persistent banner with active countdown and live safety state toggle.",
+    "Create the Active Layers panel showing individual pyramided positions with dual R-multiple and explicit plain-English floating dollar values (e.g., '+$696.00 (+2.97%) | +2.48 R').",
+    "Ensure seamless tab switching between Terminal, Journal, and Backtest screens while preserving live execution states.",
+    "Include simulated controls for manual layer execution, risk preset adjusters, and simulation / MT5 bridge toggle.",
+    "Strictly follow the Dark Obsidian Tactical Terminal visual style: sharp corners, high APCA contrast, monospaced numeric values, and 1px hairline structural grid borders."
+  ]
+}
