@@ -1,0 +1,118 @@
+from __future__ import annotations
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Dict, Optional
+import pandas as pd
+from .contracts import EngineContext
+from .engines import EngineSuite
+from .engines.utils import safe_atr
+from .consensus import Consensus, summarize
+from .session import session_for
+from .book import PositionBook
+from .risk import SymbolSpec
+
+REFERENCE_TFS = ("D1", "H4")  # shown for context only, no longer a hard gate - too slow-moving for scalping
+BIAS_TF = "H1"                # real trend/direction gate
+SETUP_TF = "M15"              # setup confirmation between bias and entry
+ENTRY_TF = "M5"
+
+
+@dataclass
+class StrategyConfig:
+    sl_atr_mult: float = 1.2
+    scale_in_r: float = 0.5
+    bias_min_score: float = 0.10
+    struct_oppose_score: float = 0.15
+    lookback: int = 220
+
+
+class TopDownStrategy:
+    """H1 bias -> M15 setup gate -> M5 sniper entry. D1/H4 shown as reference only. Pure computation, no broker calls."""
+
+    def __init__(self, suite: EngineSuite, consensus: Consensus, cfg: StrategyConfig | None = None):
+        self.suite, self.consensus, self.cfg = suite, consensus, cfg or StrategyConfig()
+        self._cache: Dict[str, tuple] = {}
+
+    def _tf_votes(self, tf: str, df: pd.DataFrame, ctx: EngineContext) -> dict:
+        last_ts = df["time"].iloc[-1]
+        key = (tf, last_ts, ctx.session)
+        cached = self._cache.get(tf)
+        if cached and cached[0] == key:
+            return cached[1]
+        ctx.timeframe = tf
+        votes = self.suite.run(df.tail(self.cfg.lookback), ctx)
+        cons = self.consensus.evaluate(votes, ctx.session)
+        out = {"votes": votes, "consensus": cons}
+        self._cache[tf] = (key, out)
+        return out
+
+    def analyze(self, frames: Dict[str, pd.DataFrame], now: datetime, spec: SymbolSpec, advisory: Optional[dict] = None) -> dict:
+        session = session_for(now)
+        ctx = EngineContext(session=session, contract_size=spec.contract_size, advisory=advisory, now=now)
+        all_tfs = (*REFERENCE_TFS, BIAS_TF, SETUP_TF, ENTRY_TF)
+        tf = {t: self._tf_votes(t, frames[t], ctx) for t in all_tfs if t in frames and len(frames[t]) > 0}
+
+        h1 = tf.get(BIAS_TF, {}).get("consensus", {})
+        d1 = tf.get("D1", {}).get("consensus", {})
+        h4 = tf.get("H4", {}).get("consensus", {})
+        bias = self._bias_from_h1(h1, d1, h4)
+
+        # D1/H4 kept as informational reference only - too slow-moving to hard-gate a scalp entry
+        reference = {"d1_direction": d1.get("direction", "neutral"), "d1_score": d1.get("score", 0.0),
+                     "h4_direction": h4.get("direction", "neutral"), "h4_score": h4.get("score", 0.0)}
+
+        m15 = tf.get(SETUP_TF, {}).get("consensus", {})
+        struct_ok = not (m15 and bias["direction"] != "neutral" and m15.get("direction") not in (bias["direction"], "neutral")
+                         and abs(m15.get("score", 0)) >= self.cfg.struct_oppose_score)
+        m5 = tf.get(ENTRY_TF, {})
+        entry_cons = m5.get("consensus", {})
+        gate_reason = None
+        fire = False
+        if bias["direction"] == "neutral":
+            gate_reason = "H1 bias neutral - entries gated"
+        elif not struct_ok:
+            gate_reason = f"M15 setup opposes {bias['direction']} bias (score {m15.get('score', 0):+.2f})"
+        elif not entry_cons.get("passes"):
+            gate_reason = (f"M5 consensus {entry_cons.get('score', 0):+.2f} / {entry_cons.get('aligned', 0)} aligned "
+                           f"below {session} threshold ({entry_cons.get('threshold')}, {entry_cons.get('min_aligned')})")
+        elif entry_cons.get("direction") != bias["direction"]:
+            gate_reason = f"M5 signal {entry_cons.get('direction')} against {bias['direction']} bias"
+        else:
+            fire = True
+        if fire and advisory and advisory.get("bias") not in (None, "neutral", bias["direction"]):
+            entry_cons = dict(entry_cons)
+            entry_cons["advisory_conflict"] = True
+        return {
+            "time": now.isoformat(), "session": session, "bias": bias, "reference": reference,
+            "structure": m15, "struct_ok": struct_ok,
+            "timeframes": tf, "entry": entry_cons, "votes": m5.get("votes", {}),
+            "summary": summarize(entry_cons) if entry_cons else "No M5 data",
+            "fire": fire, "gate_reason": gate_reason, "advisory": advisory,
+        }
+
+    def _bias_from_h1(self, h1: dict, d1: dict, h4: dict) -> dict:
+        s = h1.get("score", 0.0)
+        m = self.cfg.bias_min_score
+        direction = "long" if s >= m else "short" if s <= -m else "neutral"
+        return {"direction": direction, "strength": round(abs(s), 4), "h1_score": round(s, 4),
+                "d1_score": round(d1.get("score", 0.0), 4), "h4_score": round(h4.get("score", 0.0), 4)}
+
+    def propose_entry(self, analysis: dict, frames: Dict[str, pd.DataFrame], book: PositionBook, spec: SymbolSpec,
+                      price_bid: float, price_ask: float) -> Optional[dict]:
+        if not analysis["fire"]:
+            return None
+        direction = analysis["bias"]["direction"]
+        m5 = frames[ENTRY_TF]
+        atr = safe_atr(m5.tail(60))
+        group = book.group_for(direction)
+        if group:
+            last = group[-1]
+            ref = price_bid if direction == "long" else price_ask
+            if last.r_multiple(ref) < self.cfg.scale_in_r:
+                return {"blocked": f"Scale-in requires +{self.cfg.scale_in_r}R on layer {last.layer_number} first"}
+        entry = price_ask if direction == "long" else price_bid
+        sl = entry - atr * self.cfg.sl_atr_mult if direction == "long" else entry + atr * self.cfg.sl_atr_mult
+        equity = book.equity((price_bid + price_ask) / 2)
+        decision = book.risk.size_new_layer(equity, entry, sl, book.layers, direction)
+        return {"direction": direction, "entry": entry, "sl": round(sl, 2), "atr": atr, "decision": decision,
+                "blocked": None if decision.allowed else decision.reason}

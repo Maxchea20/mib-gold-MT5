@@ -1,0 +1,11 @@
+[
+  {
+    "title": "Example: US CPI m/m",
+    "country": "USD",
+    "time": "2026-01-01T13:30:00+00:00",
+    "impact": "High",
+    "forecast": "0.3%",
+    "previous": "0.2%",
+    "enabled": false
+  }
+]
