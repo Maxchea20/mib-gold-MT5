@@ -1,8 +1,8 @@
 from fastapi import FastAPI, APIRouter, WebSocket, WebSocketDisconnect, HTTPException, Query
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
-from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel
 from typing import Optional, List, Set
 from datetime import datetime, timezone, timedelta
@@ -23,13 +23,12 @@ from mibgold.backtest.harness import Backtest, BacktestRunner
 from mibgold.consensus import DEFAULT_WEIGHTS
 from mibgold.engines import ENGINE_META
 from mibgold.session import SESSION_THRESHOLD, SESSION_MIN_ALIGNED, SESSION_LABEL
+from mibgold.store import Store
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("mibgold.server")
 
-mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
+store = Store(Path(os.environ["MIBGOLD_DB"]) if os.environ.get("MIBGOLD_DB") else None)
 
 app = FastAPI(title="mib-gold")
 api = APIRouter(prefix="/api")
@@ -61,7 +60,7 @@ runner = BacktestRunner()
 
 
 async def persist_trade(rec: dict):
-    await db.trades.update_one({"id": rec["id"]}, {"$set": rec}, upsert=True)
+    store.upsert_trade(rec)
 
 
 live = LiveEngine(adapter, gate, interpreter, hub.broadcast, persist_trade)
@@ -83,11 +82,10 @@ async def _startup():
 
 @app.on_event("shutdown")
 async def _shutdown():
-    client.close()
+    store.close()
     adapter.shutdown()
 
 
-# ---------------- REST ----------------
 @api.get("/")
 async def root():
     return {"app": "mib-gold", "mode": live.book.mode}
@@ -114,14 +112,11 @@ async def config():
 
 @api.get("/weights")
 async def get_weights():
-    """Current LIVE engine weights (applies to real-time trading, not backtests)."""
     return live.strategy.consensus.weights
 
 
 @api.post("/weights")
 async def set_weights(body: dict):
-    """Update one or more LIVE engine weights immediately (no restart needed) and persist to disk
-    so the change survives a server restart. Backtests are unaffected - they take weights per-run."""
     live.strategy.consensus.weights.update(body)
     WEIGHTS_FILE.parent.mkdir(parents=True, exist_ok=True)
     WEIGHTS_FILE.write_text(json.dumps(live.strategy.consensus.weights))
@@ -130,7 +125,6 @@ async def set_weights(body: dict):
 
 @api.post("/weights/reset")
 async def reset_weights():
-    """Reset LIVE engine weights back to the built-in defaults and remove the persisted override file."""
     live.strategy.consensus.weights = dict(DEFAULT_WEIGHTS)
     if WEIGHTS_FILE.exists():
         WEIGHTS_FILE.unlink()
@@ -181,33 +175,17 @@ async def events():
 @api.get("/trades")
 async def trades(direction: Optional[str] = None, session: Optional[str] = None, outcome: Optional[str] = None,
                  engine: Optional[str] = None, mode: Optional[str] = None, backtest_id: Optional[str] = None, limit: int = 200):
-    q = {"status": "closed"}
-    if direction:
-        q["direction"] = direction
-    if session:
-        q["session"] = session
-    if outcome:
-        q["outcome"] = outcome
-    if mode:
-        q["mode"] = mode
-    if backtest_id:
-        q["backtest_id"] = backtest_id
-    if engine:
-        q[f"agent_votes.{engine}.signal"] = {"$in": ["long", "short"]}
-        q["$expr"] = {"$eq": [f"$agent_votes.{engine}.signal", "$direction"]}
-    docs = await db.trades.find(q, {"_id": 0}).sort("exit_time", -1).to_list(limit)
-    return docs
+    return store.list_trades(
+        status="closed", direction=direction, session=session, outcome=outcome,
+        mode=mode, backtest_id=backtest_id, engine=engine, limit=limit,
+        order="exit_time", descending=True,
+    )
 
 
 @api.get("/trades/stats")
 async def trade_stats(mode: Optional[str] = None, backtest_id: Optional[str] = None):
     from mibgold.backtest.attribution import summary_stats
-    q = {"status": "closed"}
-    if mode:
-        q["mode"] = mode
-    if backtest_id:
-        q["backtest_id"] = backtest_id
-    docs = await db.trades.find(q, {"_id": 0}).to_list(5000)
+    docs = store.list_trades(status="closed", mode=mode, backtest_id=backtest_id, limit=5000)
     return summary_stats(docs, live.book.start_balance)
 
 
@@ -240,7 +218,6 @@ async def add_manual(ev: ManualEvent):
 
 @api.post("/news/interpret")
 async def interpret(ev: ManualEvent):
-    """Manually trigger the AI layer on a release (e.g. to test). Never called by the hot path."""
     if not interpreter.enabled:
         raise HTTPException(400, "EMERGENT_LLM_KEY not configured")
     e = NewsEvent(ev.title, ev.country, datetime.fromisoformat(ev.time).astimezone(timezone.utc), ev.impact, ev.forecast, ev.previous, ev.actual, "manual")
@@ -249,7 +226,6 @@ async def interpret(ev: ManualEvent):
     return adv
 
 
-# ---------------- backtest ----------------
 class BacktestRequest(BaseModel):
     days: int = 10
     start_balance: float = 100.0
@@ -277,15 +253,12 @@ async def backtest_run(req: BacktestRequest):
         m1 = adapter.full_history()
     else:
         end = datetime.now(timezone.utc)
-        # MT5's copy_rates_range silently rejects overly large windows (observed: OK up to ~50 days,
-        # fails at 70+ with "Invalid params"). Cap warmup so req.days + warmup stays safely under that.
         max_total_days = int(os.environ.get("BACKTEST_MAX_TOTAL_DAYS", "45"))
         warmup_days = max(5, min(60, max_total_days - req.days))
         m1 = adapter.m1_range(end - timedelta(days=req.days + warmup_days), end)
     if m1.empty:
         raise HTTPException(400, "no data")
     cutoff = m1["time"].iloc[-1] - timedelta(days=req.days)
-    # keep 60 days of warmup for D1/H4 engines but only trade the last `days`
     m1 = m1[m1["time"] >= cutoff - timedelta(days=60)].reset_index(drop=True)
     warm_idx = int(m1["time"].searchsorted(cutoff)) // 5
     bt = Backtest(m1, live.spec, req.start_balance, req.max_layers, req.budget_pct, req.slippage_points,
@@ -308,17 +281,15 @@ async def _await_backtest(bt: Backtest):
     if bt.result:
         doc = {k: v for k, v in bt.result.items() if k != "trades"}
         doc["trade_count"] = len(bt.result["trades"])
-        await db.backtests.update_one({"id": bt.id}, {"$set": doc}, upsert=True)
+        store.upsert_backtest(doc)
         for t in bt.result["trades"]:
-            t2 = dict(t, backtest_id=bt.id)
-            await db.trades.update_one({"id": t["id"]}, {"$set": t2}, upsert=True)
+            store.upsert_trade(dict(t, backtest_id=bt.id))
     await hub.broadcast({"type": "backtest_done", "id": bt.id, "status": bt.status, "error": bt.error})
 
 
 @api.get("/backtest")
 async def backtest_list():
-    docs = await db.backtests.find({}, {"_id": 0, "equity_curve": 0, "attribution": 0}).sort("created", -1).to_list(20)
-    return docs
+    return store.list_backtests(20)
 
 
 @api.get("/backtest/{bt_id}")
@@ -328,7 +299,7 @@ async def backtest_get(bt_id: str):
         if bt.result:
             return {k: v for k, v in bt.result.items() if k != "trades"} | {"status": bt.status, "progress": bt.progress, "bar_count": len(bt.bars)}
         return {"id": bt.id, "status": bt.status, "progress": bt.progress, "error": bt.error, "bar_count": len(bt.bars)}
-    doc = await db.backtests.find_one({"id": bt_id}, {"_id": 0})
+    doc = store.get_backtest(bt_id)
     if not doc:
         raise HTTPException(404, "not found")
     return doc
@@ -339,7 +310,7 @@ async def backtest_trades(bt_id: str):
     bt = runner.runs.get(bt_id)
     if bt and bt.result:
         return bt.result["trades"]
-    return await db.trades.find({"backtest_id": bt_id}, {"_id": 0}).sort("timestamp", 1).to_list(5000)
+    return store.list_trades(status=None, backtest_id=bt_id, limit=5000, order="timestamp", descending=False)
 
 
 @api.get("/backtest/{bt_id}/bars")
@@ -359,7 +330,6 @@ async def backtest_stop(bt_id: str):
     return {"status": "stopping"}
 
 
-# ---------------- WebSocket ----------------
 @app.websocket("/api/ws")
 async def ws_endpoint(ws: WebSocket):
     await ws.accept()
@@ -367,7 +337,7 @@ async def ws_endpoint(ws: WebSocket):
     try:
         await ws.send_text(json.dumps({"type": "snapshot", "status": live.status()}, default=str))
         while True:
-            await ws.receive_text()  # keepalive / ignore client messages
+            await ws.receive_text()
     except WebSocketDisconnect:
         pass
     except Exception:
@@ -379,3 +349,44 @@ async def ws_endpoint(ws: WebSocket):
 app.include_router(api)
 app.add_middleware(CORSMiddleware, allow_credentials=True, allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
                    allow_methods=["*"], allow_headers=["*"])
+
+
+def _ui_dir() -> Optional[Path]:
+    raw = os.environ.get("MIBGOLD_UI_DIR")
+    candidates = []
+    if raw:
+        candidates.append(Path(raw))
+    candidates.append(ROOT_DIR / "ui")
+    candidates.append(ROOT_DIR.parent / "frontend" / "build")
+    for p in candidates:
+        if (p / "index.html").is_file():
+            return p
+    return None
+
+
+UI_DIR = _ui_dir()
+if UI_DIR is not None:
+    assets = UI_DIR / "static"
+    if assets.is_dir():
+        app.mount("/static", StaticFiles(directory=str(assets)), name="static")
+
+    @app.get("/")
+    async def ui_index():
+        return FileResponse(UI_DIR / "index.html")
+
+    @app.get("/{path:path}")
+    async def ui_spa(path: str):
+        if path.startswith("api/") or path == "api":
+            raise HTTPException(404, "not found")
+        target = (UI_DIR / path).resolve()
+        try:
+            target.relative_to(UI_DIR.resolve())
+        except ValueError:
+            raise HTTPException(404, "not found")
+        if target.is_file():
+            return FileResponse(target)
+        return FileResponse(UI_DIR / "index.html")
+else:
+    @app.get("/")
+    async def no_ui():
+        return {"app": "mib-gold", "ui": False, "hint": "build frontend or open /api"}
