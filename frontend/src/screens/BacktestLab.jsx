@@ -8,14 +8,14 @@ const DEFAULT_CSV = "data/GOLD#_M1_202606031118_202609141118.csv";
 
 function shortTime(t) {
   if (!t) return "—";
-  const s = String(t).replace("T", " ");
-  return s.slice(5, 16);
+  return String(t).replace("T", " ").slice(5, 16);
 }
 
 export default function BacktestLab({ feed }) {
   const [form, setForm] = useState({
-    days: 90, start_balance: 13688, max_layers: 3, budget_pct: 0.1, slippage_points: 5, use_news_gate: true,
-    csv_path: DEFAULT_CSV, bias_min_score: 0.10, struct_oppose_score: 0.15, min_risk_usd: 10, max_risk_usd: 100,
+    days: 90, start_balance: 250, max_layers: 3, budget_pct: 0.1, slippage_points: 5, use_news_gate: true,
+    csv_path: DEFAULT_CSV, fixed_lots: 0.01, sl_dollars: 3, tp_dollars: 3,
+    bias_min_score: 0.10, struct_oppose_score: 0.15, min_risk_usd: 1, max_risk_usd: 100,
     weights: { trend: 1, sr: 1, breakout: 0.9, momentum: 0.8, volume: 0.6, fibonacci: 0.7, elliott: 0.35, fvg: 0.9, pattern: 0.8, structure: 1 },
   });
   const [runId, setRunId] = useState(null);
@@ -23,7 +23,6 @@ export default function BacktestLab({ feed }) {
   const [result, setResult] = useState(null);
   const [trades, setTrades] = useState([]);
   const [err, setErr] = useState(null);
-  const [showCfg, setShowCfg] = useState(false);
 
   useEffect(() => {
     const b = feed.backtest; if (!b || b.id !== runId) return;
@@ -45,49 +44,48 @@ export default function BacktestLab({ feed }) {
     try { const r = await api.runBacktest(body); setRunId(r.id); } catch (e) { setErr(e?.response?.data?.detail || e.message); }
   };
 
-  const set = (k, num = true) => (e) => setForm((f) => ({ ...f, [k]: num ? Number(e.target.value) : e.target.checked }));
+  const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.type === "checkbox" ? e.target.checked : Number(e.target.value) }));
   const running = runId && !result && !err;
   const s = result?.stats || {};
   const attr = result?.attribution || {};
   const exits = s.by_exit || {};
-  const sl = exits.SL || 0;
-  const trail = exits.TRAIL_TP || 0;
+  const sln = exits.SL || 0;
+  const trail = (exits.TRAIL_TP || 0) + (exits.TP || 0);
 
-  const bySess = {};
-  const bySide = {};
+  const bySess = {}, bySide = {};
   trades.forEach((t) => {
-    const sess = t.session || "?";
-    const side = t.direction || t.side || "?";
-    const r = Number(t.r_multiple ?? t.r ?? 0);
-    const pnl = Number(t.pnl ?? t.pnl_usd ?? 0);
-    bySess[sess] = bySess[sess] || { n: 0, r: 0, pnl: 0, w: 0 };
-    bySess[sess].n += 1; bySess[sess].r += r; bySess[sess].pnl += pnl; if (r > 0 || pnl > 0) bySess[sess].w += 1;
-    bySide[side] = bySide[side] || { n: 0, r: 0, pnl: 0, w: 0 };
-    bySide[side].n += 1; bySide[side].r += r; bySide[side].pnl += pnl; if (r > 0 || pnl > 0) bySide[side].w += 1;
+    const sess = t.session || "?"; const side = t.direction || "?";
+    const r = Number(t.r_multiple ?? t.r ?? 0); const pnl = Number(t.pnl ?? 0);
+    bySess[sess] = bySess[sess] || { n: 0, pnl: 0, w: 0 };
+    bySess[sess].n += 1; bySess[sess].pnl += pnl; if (pnl > 0) bySess[sess].w += 1;
+    bySide[side] = bySide[side] || { n: 0, pnl: 0, w: 0 };
+    bySide[side].n += 1; bySide[side].pnl += pnl; if (pnl > 0) bySide[side].w += 1;
   });
 
   return (
-    <div className="flex-1 flex min-h-0" data-testid="backtest-screen">
-      <div className="w-[240px] shrink-0 border-r border-[var(--hair)] overflow-y-auto">
-        <div className="panel-head">Run</div>
-        <div className="p-3 flex flex-col gap-2">
-          <button className="btn active" onClick={run} disabled={!!running}>{running ? `running ${(progress * 100).toFixed(0)}%` : "run backtest"}</button>
-          {err && <div className="text-bear text-[10px] mono">{err}</div>}
-          <button className="btn" onClick={() => setShowCfg((v) => !v)}>{showCfg ? "hide config" : "show config"}</button>
+    <div className="flex-1 flex min-h-0">
+      <div className="w-[260px] shrink-0 border-r border-[var(--hair)] overflow-y-auto">
+        <div className="panel-head">Your book</div>
+        <div className="p-3 grid grid-cols-2 gap-2">
+          <Field label="capital $"><input className="input" type="number" value={form.start_balance} onChange={set("start_balance")} /></Field>
+          <Field label="lot"><input className="input" type="number" step="0.01" value={form.fixed_lots} onChange={set("fixed_lots")} /></Field>
+          <Field label="SL $"><input className="input" type="number" step="0.1" value={form.sl_dollars} onChange={set("sl_dollars")} /></Field>
+          <Field label="TP $"><input className="input" type="number" step="0.1" value={form.tp_dollars} onChange={set("tp_dollars")} /></Field>
+          <Field label="days"><input className="input" type="number" value={form.days} onChange={set("days")} /></Field>
+          <Field label="layers"><input className="input" type="number" value={form.max_layers} onChange={set("max_layers")} /></Field>
         </div>
-        {showCfg && (
-          <div className="px-3 pb-3 grid grid-cols-2 gap-2">
-            <Field label="days"><input className="input" type="number" value={form.days} onChange={set("days")} /></Field>
-            <Field label="start $"><input className="input" type="number" value={form.start_balance} onChange={set("start_balance")} /></Field>
-            <div className="col-span-2"><Field label="csv"><input className="input" value={form.csv_path} onChange={(e) => setForm((f) => ({ ...f, csv_path: e.target.value }))} /></Field></div>
-          </div>
-        )}
+        <div className="px-3 pb-3 text-[10px] text-mute">0.01 lot × SL $3 = $3 risk. TP $3 = 1R scalp. Not demo balance.</div>
+        <div className="px-3 pb-3">
+          <button className="btn active w-full" onClick={run} disabled={!!running}>{running ? `running ${(progress * 100).toFixed(0)}%` : "run backtest"}</button>
+          {err && <div className="text-bear text-[10px] mono mt-2">{err}</div>}
+        </div>
       </div>
 
       <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-y-auto">
-        <div className="shrink-0 p-3 border-b border-[var(--hair)]" data-testid="bt-report">
+        <div className="p-3 border-b border-[var(--hair)]">
           <div className="text-[10px] mono uppercase tracking-widest text-mute mb-2">
-            Report {result?.id || "—"} · {result?.range ? `${String(result.range.start).slice(0, 10)} → ${String(result.range.end).slice(0, 10)} · ${result.range.m5_bars} M5` : "no run"}
+            Report {result?.id || "—"} · {result?.range ? `${String(result.range.start).slice(0, 10)} → ${String(result.range.end).slice(0, 10)}` : "no run"}
+            {result?.config ? ` · lot ${result.config.fixed_lots} SL ${result.config.sl_dollars} TP ${result.config.tp_dollars}` : ""}
           </div>
           <div className="grid grid-cols-8 gap-3 mono text-[12px]">
             <Stat k="trades" v={s.trades ?? "—"} />
@@ -97,19 +95,14 @@ export default function BacktestLab({ feed }) {
             <Stat k="net" v={s.net_pnl_text || usd(s.net_pnl)} good={s.net_pnl >= 0} />
             <Stat k="return" v={s.return_pct == null ? "—" : pct(s.return_pct, 2)} good={s.return_pct >= 0} />
             <Stat k="final" v={result ? usd(result.final_balance) : "—"} gold />
-            <Stat k="SL / trail" v={s.trades ? `${((sl / s.trades) * 100).toFixed(0)}% / ${((trail / s.trades) * 100).toFixed(0)}%` : "—"} />
+            <Stat k="SL / TP" v={s.trades ? `${((sln / s.trades) * 100).toFixed(0)}% / ${((trail / s.trades) * 100).toFixed(0)}%` : "—"} />
           </div>
-          <div className="mt-2 flex gap-6 text-[10px] mono text-dim">
-            {Object.entries(bySide).map(([k, v]) => (
-              <span key={k}>{k} {v.n}t WR {(v.w / v.n * 100).toFixed(0)}% {usd(v.pnl, true)}</span>
-            ))}
-            {Object.entries(bySess).map(([k, v]) => (
-              <span key={k}>{k} {v.n}t WR {(v.w / v.n * 100).toFixed(0)}% {usd(v.pnl, true)}</span>
-            ))}
+          <div className="mt-2 flex flex-wrap gap-4 text-[10px] mono text-dim">
+            {Object.entries(bySide).map(([k, v]) => <span key={k}>{k} {v.n}t WR {(v.w / v.n * 100).toFixed(0)}% {usd(v.pnl, true)}</span>)}
+            {Object.entries(bySess).map(([k, v]) => <span key={k}>{k} {v.n}t WR {(v.w / v.n * 100).toFixed(0)}% {usd(v.pnl, true)}</span>)}
           </div>
         </div>
-
-        <div className="h-[180px] shrink-0 border-b border-[var(--hair)]">
+        <div className="h-[160px] shrink-0 border-b border-[var(--hair)]">
           {(result?.equity_curve || []).length > 0 && (
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart data={result.equity_curve} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
@@ -122,48 +115,21 @@ export default function BacktestLab({ feed }) {
             </ResponsiveContainer>
           )}
         </div>
-
-        <div className="shrink-0 px-3 py-2 border-b border-[var(--hair)]">
+        <div className="flex-1 min-h-0 overflow-auto">
           <table className="tbl">
-            <thead><tr><th>engine</th><th>n</th><th>WR</th><th>edge</th><th>verdict</th></tr></thead>
-            <tbody>
-              {ENGINE_ORDER.map((k) => {
-                const a = attr[k]; if (!a || !(a.strongest_count || a.edge)) return null;
-                return (
-                  <tr key={k} className="mono text-[10px]">
-                    <td>{a.engine || k}</td>
-                    <td>{a.strongest_count ?? 0}</td>
-                    <td>{a.strongest_win_rate == null ? "—" : pct(a.strongest_win_rate, 0)}</td>
-                    <td className={a.edge > 0 ? "text-bull" : "text-bear"}>{a.edge == null ? "—" : (a.edge >= 0 ? "+" : "") + Number(a.edge).toFixed(2)}</td>
-                    <td>{a.recommendation || "—"}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-
-        <div className="flex-1 min-h-0 overflow-auto" data-testid="bt-blotter">
-          <table className="tbl">
-            <thead>
-              <tr>
-                <th>time</th><th>side</th><th>L</th><th>session</th><th>in</th><th>out</th><th>exit</th><th>R</th><th>pnl</th>
-              </tr>
-            </thead>
+            <thead><tr><th>time</th><th>side</th><th>L</th><th>session</th><th>in</th><th>out</th><th>exit</th><th>R</th><th>pnl</th></tr></thead>
             <tbody>
               {trades.map((t, i) => {
-                const r = Number(t.r_multiple ?? t.r ?? 0);
-                const pnl = Number(t.pnl ?? t.pnl_usd ?? 0);
-                const side = t.direction || t.side || "";
+                const r = Number(t.r_multiple ?? 0); const pnl = Number(t.pnl ?? 0); const side = t.direction || "";
                 return (
                   <tr key={t.id || i} className="mono text-[10px]">
-                    <td>{shortTime(t.exit_time || t.timestamp || t.time)}</td>
+                    <td>{shortTime(t.exit_time || t.timestamp)}</td>
                     <td className={side === "long" ? "text-bull" : "text-bear"}>{String(side).toUpperCase()}</td>
-                    <td>L{t.layer_number ?? t.layer ?? ""}</td>
-                    <td>{t.session || "—"}</td>
-                    <td>{t.entry ?? t.entry_price}</td>
-                    <td>{t.exit_price ?? t.exit}</td>
-                    <td>{t.exit_reason || t.exit_type || "—"}</td>
+                    <td>L{t.layer_number}</td>
+                    <td>{t.session}</td>
+                    <td>{t.entry}</td>
+                    <td>{t.exit_price}</td>
+                    <td>{t.exit_reason}</td>
                     <td className={r >= 0 ? "text-bull" : "text-bear"}>{rTxt(r)}</td>
                     <td className={pnl >= 0 ? "text-bull" : "text-bear"}>{usd(pnl, true)}</td>
                   </tr>
@@ -179,10 +145,5 @@ export default function BacktestLab({ feed }) {
 
 function Stat({ k, v, good, gold }) {
   const cls = gold ? "text-gold" : good === true ? "text-bull" : good === false ? "text-bear" : "";
-  return (
-    <div>
-      <div className="text-[9px] uppercase tracking-widest text-mute">{k}</div>
-      <div className={`text-[13px] ${cls}`}>{v}</div>
-    </div>
-  );
+  return (<div><div className="text-[9px] uppercase tracking-widest text-mute">{k}</div><div className={`text-[13px] ${cls}`}>{v}</div></div>);
 }
