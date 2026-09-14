@@ -1,6 +1,6 @@
 import { NavLink } from "react-router-dom";
 import { Activity, Radio, Wifi, WifiOff } from "lucide-react";
-import { usd, pct, SESSION_LABEL } from "@/lib/format";
+import { usd, SESSION_LABEL } from "@/lib/format";
 
 function Metric({ label, value, sub, cls = "", testId }) {
   return (
@@ -14,9 +14,12 @@ function Metric({ label, value, sub, cls = "", testId }) {
 
 export default function TopBar({ status, account, tick, connected, transport }) {
   const eq = account?.equity, today = account?.today_pnl ?? 0;
-  const used = account?.risk_used_pct ?? 0, budget = account?.risk_budget_pct ?? 0.1;
-  const gauge = Math.min(100, (used / budget) * 100);
-  const gaugeCls = gauge > 80 ? "bg-bear" : gauge > 50 ? "bg-gold" : "bg-bull";
+  const book = status?.book_rules || {};
+  const lot = book.lot ?? 0.02;
+  const sl = book.sl ?? 1.5;
+  const tp = book.tp ?? 3;
+  const layers = book.layers ?? account?.max_layers ?? 1;
+  const clip = lot * sl * 100;
   const session = status?.session;
   const tabs = [["terminal", "/", "Terminal"], ["journal", "/journal", "Journal"], ["backtest", "/backtest", "Backtest Lab"]];
   return (
@@ -28,10 +31,10 @@ export default function TopBar({ status, account, tick, connected, transport }) 
       </div>
       <Metric label="Equity" value={usd(eq)} sub={`bal ${usd(account?.balance)}`} cls="text-gold" testId="metric-account-equity" />
       <Metric label="Today P&L" value={usd(today, true)} sub={`floating ${usd(account?.floating_pnl ?? 0, true)}`} cls={today >= 0 ? "text-bull" : "text-bear"} testId="metric-today-pnl" />
-      <div className="flex flex-col justify-center px-4 border-r border-[var(--hair)] min-w-[170px]" data-testid="metric-risk-gauge">
-        <div className="flex justify-between text-[9px] uppercase tracking-[.14em] text-mute mono"><span>Risk used</span><span>{account?.max_layers ?? 3} layers max</span></div>
-        <span className="mono text-[15px] font-semibold leading-tight">{pct(used)} <span className="text-mute text-[11px]">/ {pct(budget, 0)}</span></span>
-        <div className="conf-track mt-1"><div className={`conf-fill ${gaugeCls}`} style={{ width: `${gauge}%` }} /></div>
+      <div className="flex flex-col justify-center px-4 border-r border-[var(--hair)] min-w-[190px]" data-testid="metric-risk-gauge">
+        <div className="flex justify-between text-[9px] uppercase tracking-[.14em] text-mute mono"><span>Keeper book</span><span>L{layers}</span></div>
+        <span className="mono text-[15px] font-semibold leading-tight">0.0{String(lot).replace("0.","")} · {sl}/{tp}</span>
+        <span className="text-[10px] text-dim mono">clip {usd(clip)} · no trail · news ±30m</span>
       </div>
       <Metric label="XAUUSD" value={tick ? tick.bid.toFixed(2) : "—"} sub={tick ? `ask ${tick.ask.toFixed(2)} · spr ${(tick.ask - tick.bid).toFixed(2)}` : ""} testId="metric-price" />
       <Metric label="Session" value={SESSION_LABEL[session] || "—"} sub={tick ? new Date(tick.time).toISOString().slice(0, 16).replace("T", " ") + "Z" : ""} cls="text-cyan" testId="metric-session" />
