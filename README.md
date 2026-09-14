@@ -1,15 +1,22 @@
 # mib-gold
 
 Desktop XAUUSD terminal. **One process.** Engine + UI on `http://127.0.0.1:8001`.
-No Mongo. No separate frontend server.
+
+## Keeper book (live)
+
+- Lot **0.02** · SL **$1.5** · TP **$3** · L1 only
+- Skip **London**, **Friday**, **19:00 UTC**
+- News gate **on** ±**30 min** around USD high-impact (NFP / CPI / FOMC)
+- Trail **off**. Minute brain time-stops dead fills at 20m / <0.15R
+- Auto-trade **on**
+
+Copy `backend/.env.example` to `backend/.env` and fill MT5 login/path.
 
 ```
 python run_app.py
 ```
 
-Then open that URL. That is the operate path.
-
-Tauri still wraps the same sidecar: double-click the built `.exe` and it spawns the engine, then kills it when the window closes.
+Open `http://127.0.0.1:8001`. Leave Auto-trade enabled. MT5 must be logged in with Algo Trading on.
 
 ## Layout
 
@@ -18,60 +25,40 @@ run_app.py                  one-command host
 backend/
   sidecar.py                uvicorn on 127.0.0.1:8001, serves /api and built UI
   server.py                 FastAPI + WebSocket
-  mibgold/store.py          SQLite (backend/data/mibgold.sqlite)
-  mibgold/                  engines, book, risk, adapters, live, backtest
-frontend/                   React UI (build once, then served by sidecar)
+  mibgold/                  engines, book, live, backtest, news gate
+frontend/                   React UI (build once, served by sidecar)
 desktop/src-tauri/          window + sidecar spawn/kill
 ```
 
-## Daily use (sim, any OS)
+## First run
 
 ```bash
 cd backend
 python -m venv .venv
-.venv/Scripts/activate          # Windows
-# source .venv/bin/activate     # mac/linux
+.venv\Scripts\activate
 pip install -r requirements.txt
-cd ..
+copy .env.example .env
+cd ..\frontend && yarn && yarn build && cd ..
 python run_app.py
 ```
-
-Optional first time if you want the UI from the same port:
-
-```bash
-cd frontend && yarn && yarn build && cd ..
-python run_app.py
-```
-
-If `frontend/build` is missing you still get `/api`. Build the UI once; you do not run `yarn start` next to uvicorn.
 
 ## MT5 (Windows)
 
-In `backend/.env`:
+`backend/.env`:
 
 ```
 BROKER_MODE=mt5
-MT5_SYMBOL=GOLD
-MT5_SERVER=XMGlobal-MT5 2
+MT5_SYMBOL=GOLD#
 MT5_PATH=C:\Program Files\MetaTrader 5\terminal64.exe
-MT5_SERVER_UTC_OFFSET_HOURS=3
+AUTO_TRADE=true
+MAX_LAYERS=1
+FIXED_LOTS=0.02
+SL_DOLLARS=1.5
+TP_DOLLARS=3
+NEWS_WINDOW_BEFORE_MIN=30
+NEWS_WINDOW_AFTER_MIN=30
 ```
 
-Install `MetaTrader5` into the same venv. Keep the MT5 terminal logged in with Algo Trading on. Then `python run_app.py`.
+Install `MetaTrader5` in the same venv. Terminal logged in. Algo Trading ON. Then `python run_app.py`.
 
-## Desktop .exe
-
-```
-cd backend && pip install pyinstaller && pyinstaller --onefile --name mibgold-backend-x86_64-pc-windows-msvc sidecar.py
-mkdir ..\desktop\src-tauri\binaries && move dist\mibgold-backend-x86_64-pc-windows-msvc.exe ..\desktop\src-tauri\binaries\
-cd ..\frontend && yarn build
-cd ..\desktop && cargo tauri build
-```
-
-Open the installed app only. Sidecar starts and dies with the window.
-
-## Env
-
-`MAX_LAYERS` `RISK_BUDGET_PCT` `NEWS_WINDOW_BEFORE_MIN` `NEWS_WINDOW_AFTER_MIN`
-`TICK_POLL_MS` `AUTO_TRADE` `SIM_SPEED` `SIM_START_BALANCE` `MIBGOLD_DB` `MIBGOLD_UI_DIR` `PORT`
-`EMERGENT_LLM_KEY` is optional (news advisory only).
+Status `/api/status` should show `auto_trade: true`, `book_rules` lot 0.02 / sl 1.5 / tp 3, and `news.blocked` around prints.
