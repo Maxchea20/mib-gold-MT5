@@ -26,6 +26,9 @@ class PositionBook:
                    votes: dict, consensus: dict, summary: str, session: str, bias: dict, ticket=None, tp=None) -> Layer:
         group = self.group_for(direction)
         gid = group[0].group_id if group else new_id("G")
+        # Scale-in (L2+) banks at L1's TP, not a fresh target from a worse fill.
+        if group and group[0].tp is not None:
+            tp = group[0].tp
         layer = Layer(id=new_id("L"), group_id=gid, layer_number=len(group) + 1, direction=direction,
                       entry=entry, sl=sl, initial_sl=sl, lots=lots, risk_usd=risk_usd, open_time=ts, peak=entry,
                       agent_votes=votes, consensus=consensus, summary=summary, session=session, bias=bias,
