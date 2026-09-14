@@ -1,7 +1,7 @@
 from __future__ import annotations
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 import pandas as pd
 from .contracts import EngineContext
 from .engines import EngineSuite
@@ -24,6 +24,7 @@ class StrategyConfig:
     bias_min_score: float = 0.10
     struct_oppose_score: float = 0.15
     lookback: int = 220
+    blocked_sessions: Tuple[str, ...] = ("london",)
 
 
 class TopDownStrategy:
@@ -57,7 +58,6 @@ class TopDownStrategy:
         h4 = tf.get("H4", {}).get("consensus", {})
         bias = self._bias_from_h1(h1, d1, h4)
 
-        # D1/H4 kept as informational reference only - too slow-moving to hard-gate a scalp entry
         reference = {"d1_direction": d1.get("direction", "neutral"), "d1_score": d1.get("score", 0.0),
                      "h4_direction": h4.get("direction", "neutral"), "h4_score": h4.get("score", 0.0)}
 
@@ -68,7 +68,9 @@ class TopDownStrategy:
         entry_cons = m5.get("consensus", {})
         gate_reason = None
         fire = False
-        if bias["direction"] == "neutral":
+        if session in self.cfg.blocked_sessions:
+            gate_reason = f"session cut: {session}"
+        elif bias["direction"] == "neutral":
             gate_reason = "H1 bias neutral - entries gated"
         elif not struct_ok:
             gate_reason = f"M15 setup opposes {bias['direction']} bias (score {m15.get('score', 0):+.2f})"
@@ -108,7 +110,12 @@ class TopDownStrategy:
         if group:
             last = group[-1]
             ref = price_bid if direction == "long" else price_ask
-            if last.r_multiple(ref) < self.cfg.scale_in_r:
+            if last.tp is not None:
+                need = abs(last.tp - last.entry) * 0.5
+                gone = (ref - last.entry) if last.direction == "long" else (last.entry - ref)
+                if gone < need:
+                    return {"blocked": f"Scale-in requires L1 50% to TP (need {need:.2f}, have {gone:.2f})"}
+            elif last.r_multiple(ref) < self.cfg.scale_in_r:
                 return {"blocked": f"Scale-in requires +{self.cfg.scale_in_r}R on layer {last.layer_number} first"}
         entry = price_ask if direction == "long" else price_bid
         sl = entry - atr * self.cfg.sl_atr_mult if direction == "long" else entry + atr * self.cfg.sl_atr_mult
