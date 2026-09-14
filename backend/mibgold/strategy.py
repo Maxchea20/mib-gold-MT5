@@ -1,6 +1,6 @@
 from __future__ import annotations
-from dataclasses import dataclass, field
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Dict, Optional, Tuple
 import pandas as pd
 from .contracts import EngineContext
@@ -11,9 +11,9 @@ from .session import session_for
 from .book import PositionBook
 from .risk import SymbolSpec
 
-REFERENCE_TFS = ("D1", "H4")  # shown for context only, no longer a hard gate - too slow-moving for scalping
-BIAS_TF = "H1"                # real trend/direction gate
-SETUP_TF = "M15"              # setup confirmation between bias and entry
+REFERENCE_TFS = ("D1", "H4")
+BIAS_TF = "H1"
+SETUP_TF = "M15"
 ENTRY_TF = "M5"
 
 
@@ -25,11 +25,11 @@ class StrategyConfig:
     struct_oppose_score: float = 0.15
     lookback: int = 220
     blocked_sessions: Tuple[str, ...] = ("london",)
+    blocked_weekdays: Tuple[int, ...] = (4,)   # Friday
+    blocked_hours_utc: Tuple[int, ...] = (19,)  # 19:00-19:59 UTC
 
 
 class TopDownStrategy:
-    """H1 bias -> M15 setup gate -> M5 sniper entry. D1/H4 shown as reference only. Pure computation, no broker calls."""
-
     def __init__(self, suite: EngineSuite, consensus: Consensus, cfg: StrategyConfig | None = None):
         self.suite, self.consensus, self.cfg = suite, consensus, cfg or StrategyConfig()
         self._cache: Dict[str, tuple] = {}
@@ -49,6 +49,8 @@ class TopDownStrategy:
 
     def analyze(self, frames: Dict[str, pd.DataFrame], now: datetime, spec: SymbolSpec, advisory: Optional[dict] = None) -> dict:
         session = session_for(now)
+        ts = now if now.tzinfo else now.replace(tzinfo=timezone.utc)
+        utc = ts.astimezone(timezone.utc)
         ctx = EngineContext(session=session, contract_size=spec.contract_size, advisory=advisory, now=now)
         all_tfs = (*REFERENCE_TFS, BIAS_TF, SETUP_TF, ENTRY_TF)
         tf = {t: self._tf_votes(t, frames[t], ctx) for t in all_tfs if t in frames and len(frames[t]) > 0}
@@ -57,10 +59,8 @@ class TopDownStrategy:
         d1 = tf.get("D1", {}).get("consensus", {})
         h4 = tf.get("H4", {}).get("consensus", {})
         bias = self._bias_from_h1(h1, d1, h4)
-
         reference = {"d1_direction": d1.get("direction", "neutral"), "d1_score": d1.get("score", 0.0),
                      "h4_direction": h4.get("direction", "neutral"), "h4_score": h4.get("score", 0.0)}
-
         m15 = tf.get(SETUP_TF, {}).get("consensus", {})
         struct_ok = not (m15 and bias["direction"] != "neutral" and m15.get("direction") not in (bias["direction"], "neutral")
                          and abs(m15.get("score", 0)) >= self.cfg.struct_oppose_score)
@@ -68,7 +68,11 @@ class TopDownStrategy:
         entry_cons = m5.get("consensus", {})
         gate_reason = None
         fire = False
-        if session in self.cfg.blocked_sessions:
+        if utc.weekday() in self.cfg.blocked_weekdays:
+            gate_reason = "session cut: Friday"
+        elif utc.hour in self.cfg.blocked_hours_utc:
+            gate_reason = f"session cut: {utc.hour:02d}:00 UTC"
+        elif session in self.cfg.blocked_sessions:
             gate_reason = f"session cut: {session}"
         elif bias["direction"] == "neutral":
             gate_reason = "H1 bias neutral - entries gated"
