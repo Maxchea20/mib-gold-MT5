@@ -249,7 +249,7 @@ async def interpret(ev: ManualEvent):
 
 class BacktestRequest(BaseModel):
     days: int = 10
-    start_balance: float = 100.0
+    start_balance: float = 250.0
     max_layers: int = 3
     budget_pct: float = 0.10
     slippage_points: float = 5.0
@@ -260,8 +260,11 @@ class BacktestRequest(BaseModel):
     struct_oppose_score: Optional[float] = None
     session_thresholds: Optional[dict] = None
     session_min_aligned: Optional[dict] = None
-    min_risk_usd: float = 10.0
+    min_risk_usd: float = 1.0
     max_risk_usd: float = 100.0
+    fixed_lots: Optional[float] = 0.01
+    sl_dollars: Optional[float] = 3.0
+    tp_dollars: Optional[float] = 3.0
 
 
 @api.post("/backtest/run")
@@ -286,7 +289,8 @@ async def backtest_run(req: BacktestRequest):
                   warmup_bars=max(300, warm_idx), news_gate=gate if req.use_news_gate else None, weights=req.weights,
                   bias_min_score=req.bias_min_score, struct_oppose_score=req.struct_oppose_score,
                   session_thresholds=req.session_thresholds, session_min_aligned=req.session_min_aligned,
-                  min_risk_usd=req.min_risk_usd, max_risk_usd=req.max_risk_usd)
+                  min_risk_usd=req.min_risk_usd, max_risk_usd=req.max_risk_usd,
+                  fixed_lots=req.fixed_lots, sl_dollars=req.sl_dollars, tp_dollars=req.tp_dollars)
     loop = asyncio.get_event_loop()
 
     def on_progress(p):
