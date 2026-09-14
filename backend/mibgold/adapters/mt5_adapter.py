@@ -2,12 +2,33 @@
 from __future__ import annotations
 import os
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Optional, List
 import pandas as pd
 from .base import DataAdapter, Tick
 from ..risk import SymbolSpec
 
 ORDER_COMMENT = "mib-gold"
+
+
+def _mt5_path() -> Optional[str]:
+    raw = os.environ.get("MT5_PATH") or ""
+    raw = raw.strip().strip('"').strip("'")
+    if not raw:
+        return None
+    raw = raw.replace("\\", "/")
+    p = Path(raw)
+    if p.is_file():
+        return str(p)
+    # common broker install names if the .env path was mangled by \t
+    guesses = [
+        Path(r"C:\Program Files\MetaTrader 5\terminal64.exe"),
+        Path(r"C:\Program Files (x86)\MetaTrader 5\terminal64.exe"),
+    ]
+    for g in guesses:
+        if g.is_file():
+            return str(g)
+    return str(p)
 
 
 class MT5Adapter(DataAdapter):
@@ -22,13 +43,14 @@ class MT5Adapter(DataAdapter):
 
     def connect(self) -> dict:
         kwargs = {}
-        if os.environ.get("MT5_PATH"):
-            kwargs["path"] = os.environ["MT5_PATH"]
+        path = _mt5_path()
+        if path:
+            kwargs["path"] = path
         if os.environ.get("MT5_LOGIN"):
             kwargs.update(login=int(os.environ["MT5_LOGIN"]), password=os.environ.get("MT5_PASSWORD", ""),
                           server=os.environ.get("MT5_SERVER", ""))
         if not self.mt5.initialize(**kwargs):
-            raise RuntimeError(f"MT5 initialize failed: {self.mt5.last_error()}")
+            raise RuntimeError(f"MT5 initialize failed: {self.mt5.last_error()} path={kwargs.get('path')}")
         if not self.mt5.symbol_select(self.symbol, True):
             raise RuntimeError(f"symbol_select({self.symbol}) failed: {self.mt5.last_error()}")
         info = self.mt5.terminal_info()._asdict()
