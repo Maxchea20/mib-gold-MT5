@@ -86,3 +86,9 @@ android-sdk/
 credentials.json
 *.key
 .credentials
+
+# Local app data
+backend/data/*.sqlite
+backend/data/*.sqlite-*
+*.sqlite
+frontend/build/
