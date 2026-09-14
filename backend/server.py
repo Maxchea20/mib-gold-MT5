@@ -24,6 +24,7 @@ from mibgold.consensus import DEFAULT_WEIGHTS
 from mibgold.engines import ENGINE_META
 from mibgold.session import SESSION_THRESHOLD, SESSION_MIN_ALIGNED, SESSION_LABEL
 from mibgold.store import Store
+from mibgold.bars_cache import ingest_folder, stats as bar_stats
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("mibgold.server")
@@ -77,6 +78,13 @@ async def _startup():
     start_refresher(gate)
     if isinstance(adapter, SimAdapter) and os.environ.get("SIM_NEWS", "true").lower() == "true":
         gate.add_runtime_events(adapter.sim_news_events())
+    sym = os.environ.get("MT5_SYMBOL", getattr(adapter, "symbol", "GOLD#"))
+    try:
+        imported = ingest_folder(ROOT_DIR / "data", symbol=sym)
+        if imported:
+            logger.info("history import %s", imported)
+    except Exception:
+        logger.exception("history import failed")
     asyncio.create_task(live.run())
 
 
@@ -136,6 +144,19 @@ async def chart(tf: str = "M5", n: int = 400):
     if tf not in ("M1", "M5", "H1", "H4", "D1"):
         raise HTTPException(400, "bad timeframe")
     return {"tf": tf, "bars": live.chart(tf, n)}
+
+
+@api.get("/history")
+async def history():
+    sym = os.environ.get("MT5_SYMBOL", getattr(adapter, "symbol", "GOLD#"))
+    return bar_stats(sym)
+
+
+@api.post("/history/import")
+async def history_import():
+    sym = os.environ.get("MT5_SYMBOL", getattr(adapter, "symbol", "GOLD#"))
+    imported = ingest_folder(ROOT_DIR / "data", symbol=sym)
+    return {"imported": imported, "stats": bar_stats(sym)}
 
 
 @api.get("/analysis")
