@@ -30,6 +30,12 @@ export default function useLiveFeed() {
     setLayers(s.account.layers);
   }, []);
 
+  const gateSettings = useCallback(() => ({
+    blocked: Boolean(news?.blocked),
+    reason: news?.reason || "",
+    window: news || {},
+  }), [news]);
+
   useEffect(() => {
     let closed = false, retry = 0;
     const startPolling = () => {
@@ -71,5 +77,5 @@ export default function useLiveFeed() {
     return () => { closed = true; wsRef.current?.close(); if (pollRef.current) clearInterval(pollRef.current); };
   }, [applySnapshot]);
 
-  return { status, tick, layers, analysis, news, account, advisory, lastTrades, barUpdates, backtest, connected, transport, setStatus };
+  return { status, tick, layers, analysis, news, account, advisory, lastTrades, barUpdates, backtest, connected, transport, setStatus, gateSettings };
 }
