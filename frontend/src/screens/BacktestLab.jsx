@@ -9,12 +9,17 @@ import { pct, rTxt, usd, ENGINE_ORDER, dt } from "@/lib/format";
 
 const Field = ({ label, children }) => (<label className="flex flex-col gap-0.5"><span className="text-[9px] mono uppercase tracking-widest text-mute">{label}</span>{children}</label>);
 
+const DEFAULT_CSV = "data/GOLD#_M1_202606031118_202609141118.csv";
+
 export default function BacktestLab({ feed, config }) {
-  const [form, setForm] = useState({ days: 10, start_balance: 100, max_layers: 3, budget_pct: 0.1, slippage_points: 5, use_news_gate: true,
+  const [form, setForm] = useState({
+    days: 90, start_balance: 13688, max_layers: 3, budget_pct: 0.1, slippage_points: 5, use_news_gate: true,
+    csv_path: DEFAULT_CSV,
     bias_min_score: 0.10, struct_oppose_score: 0.15, min_risk_usd: 10, max_risk_usd: 100,
     weights: { trend: 1, sr: 1, breakout: 0.9, momentum: 0.8, volume: 0.6, fibonacci: 0.7, elliott: 0.35, fvg: 0.9, pattern: 0.8, structure: 1 },
     session_thresholds: { asian: 0.34, london: 0.26, ny_overlap: 0.24, ny: 0.28, off: 0.42 },
-    session_min_aligned: { asian: 5, london: 4, ny_overlap: 4, ny: 4, off: 6 } });
+    session_min_aligned: { asian: 5, london: 4, ny_overlap: 4, ny: 4, off: 6 },
+  });
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [runId, setRunId] = useState(null);
   const [progress, setProgress] = useState(0);
@@ -47,7 +52,9 @@ export default function BacktestLab({ feed, config }) {
 
   const run = async () => {
     setErr(null); setResult(null); setTrades([]); setBars([]); setProgress(0);
-    try { const r = await api.runBacktest(form); setRunId(r.id); } catch (e) { setErr(e?.response?.data?.detail || e.message); }
+    const body = { ...form };
+    if (!body.csv_path) delete body.csv_path;
+    try { const r = await api.runBacktest(body); setRunId(r.id); } catch (e) { setErr(e?.response?.data?.detail || e.message); }
   };
 
   useEffect(() => {
@@ -59,10 +66,10 @@ export default function BacktestLab({ feed, config }) {
   const bar = bars[idx];
   const replayAnalysis = useMemo(() => {
     if (!bar) return null;
-    const votes = Object.fromEntries(Object.entries(bar.votes).map(([k, [signal, confidence, reason]]) => [k, { signal, confidence, reason }]));
+    const votes = Object.fromEntries(Object.entries(bar.votes || {}).map(([k, [signal, confidence, reason]]) => [k, { signal, confidence, reason }]));
     const dir = bar.score > 0 ? "long" : bar.score < 0 ? "short" : "neutral";
     const aligned = Object.values(votes).filter((v) => v.signal === dir).length;
-    const leaders = ENGINE_ORDER.filter((k) => votes[k]?.signal === dir).sort((a, b) => votes[b].confidence - votes[a].confidence).slice(0, 3);
+    const leaders = ENGINE_ORDER.filter((k) => votes[k]?.signal === dir).sort((a, b) => (votes[b]?.confidence || 0) - (votes[a]?.confidence || 0)).slice(0, 3);
     return { time: bar.time, session: bar.session, fire: bar.fire, gate_reason: bar.gate, votes,
       bias: { direction: bar.bias }, entry: { direction: dir, score: bar.score, aligned, total: 10, threshold: config?.session_thresholds?.[bar.session], min_aligned: config?.session_min_aligned?.[bar.session] },
       summary: dir === "neutral" ? "No consensus" : `${aligned}/10 engines aligned ${dir}${leaders.length ? ", led by " + leaders.map((k) => k).join(" + ") : ""}.` };
@@ -78,7 +85,7 @@ export default function BacktestLab({ feed, config }) {
   return (
     <div className="flex-1 flex min-h-0" data-testid="backtest-screen">
       <div className="w-[300px] shrink-0 border-r border-[var(--hair)] flex flex-col min-h-0 overflow-y-auto">
-        <div className="panel-head">Backtest config · bar-by-bar M5</div>
+        <div className="panel-head">Backtest config · GOLD# CSV</div>
         <div className="p-3 grid grid-cols-2 gap-2">
           <Field label="days"><input className="input" type="number" value={form.days} onChange={set("days")} data-testid="bt-days" /></Field>
           <Field label="start $"><input className="input" type="number" value={form.start_balance} onChange={set("start_balance")} data-testid="bt-balance" /></Field>
@@ -91,8 +98,13 @@ export default function BacktestLab({ feed, config }) {
           <Field label="min risk $"><input className="input" type="number" value={form.min_risk_usd} onChange={set("min_risk_usd")} data-testid="bt-min-risk" /></Field>
           <Field label="max risk $"><input className="input" type="number" value={form.max_risk_usd} onChange={set("max_risk_usd")} data-testid="bt-max-risk" /></Field>
         </div>
+        <div className="px-3 pb-2">
+          <Field label="csv path (blank = MT5 live history)">
+            <input className="input" type="text" value={form.csv_path} onChange={(e) => setForm((f) => ({ ...f, csv_path: e.target.value }))} data-testid="bt-csv" />
+          </Field>
+        </div>
         <div className="px-3 pb-2 text-[10px] text-mute leading-snug">
-          Risk per trade clamps to [min, max] regardless of equity — prevents a winning streak from silently ballooning position size.
+          Default file is backend/data GOLD# M1 export. Sidecar cwd is backend/, so keep path as data\\....csv
         </div>
         <div className="px-3 pb-2">
           <button className="btn w-full" onClick={() => setShowAdvanced((s) => !s)} data-testid="bt-toggle-advanced">
@@ -119,20 +131,20 @@ export default function BacktestLab({ feed, config }) {
           <button className="btn active" onClick={run} disabled={!!running} data-testid="bt-run">{running ? `running ${(progress * 100).toFixed(0)}%` : "run backtest"}</button>
           {running && <div className="conf-track"><div className="conf-fill bg-gold" style={{ width: `${progress * 100}%` }} /></div>}
           {err && <div className="text-bear text-[10px] mono" data-testid="bt-error">{err}</div>}
-          <div className="text-[10px] text-mute leading-snug">Data: {feed.status?.connection?.source || "adapter"} M1 → resampled M5/H1/H4/D1. Spread {feed.status?.symbol?.spread_price?.toFixed(2)} simulated, stops filled worst-case + slippage.</div>
+          <div className="text-[10px] text-mute leading-snug">Uses the GOLD# CSV if the file exists. Same rules as live: H1 bias, M15 gate, M5 fire, trail at +1R, no time-stop.</div>
         </div>
         {result && (
           <div className="border-t border-[var(--hair)]">
             <div className="panel-head">Results · {result.id}</div>
             <div className="p-3 grid grid-cols-2 gap-y-1 mono text-[11px]" data-testid="bt-stats">
-              <span className="text-mute">trades</span><span>{result.stats.trades}</span>
-              <span className="text-mute">win rate</span><span>{pct(result.stats.win_rate)}</span>
-              <span className="text-mute">profit factor</span><span>{result.stats.profit_factor ?? "—"}</span>
-              <span className="text-mute">avg R</span><span>{rTxt(result.stats.avg_r)}</span>
-              <span className="text-mute">net</span><span className={result.stats.net_pnl >= 0 ? "text-bull" : "text-bear"}>{result.stats.net_pnl_text}</span>
-              <span className="text-mute">return</span><span>{pct(result.stats.return_pct, 2)}</span>
+              <span className="text-mute">trades</span><span>{result.stats?.trades}</span>
+              <span className="text-mute">win rate</span><span>{pct(result.stats?.win_rate)}</span>
+              <span className="text-mute">profit factor</span><span>{result.stats?.profit_factor ?? "—"}</span>
+              <span className="text-mute">avg R</span><span>{rTxt(result.stats?.avg_r)}</span>
+              <span className="text-mute">net</span><span className={result.stats?.net_pnl >= 0 ? "text-bull" : "text-bear"}>{result.stats?.net_pnl_text}</span>
+              <span className="text-mute">return</span><span>{pct(result.stats?.return_pct, 2)}</span>
               <span className="text-mute">final</span><span className="text-gold">{usd(result.final_balance)}</span>
-              <span className="text-mute">exits</span><span className="text-dim">{Object.entries(result.stats.by_exit || {}).map(([k, v]) => `${k}:${v}`).join(" ")}</span>
+              <span className="text-mute">exits</span><span className="text-dim">{Object.entries(result.stats?.by_exit || {}).map(([k, v]) => `${k}:${v}`).join(" ")}</span>
             </div>
           </div>
         )}
@@ -148,13 +160,13 @@ export default function BacktestLab({ feed, config }) {
 
       <div className="flex-1 flex flex-col min-w-0 min-h-0">
         <div className="h-[220px] shrink-0 panel border-0 border-b flex flex-col">
-          <div className="panel-head"><span>Equity curve</span><span className="text-mute">{result ? `${result.range.start.slice(0, 10)} → ${result.range.end.slice(0, 10)} · ${result.range.m5_bars} M5 bars` : "no run"}</span></div>
+          <div className="panel-head"><span>Equity curve</span><span className="text-mute">{result?.range ? `${String(result.range.start).slice(0, 10)} → ${String(result.range.end).slice(0, 10)} · ${result.range.m5_bars} M5 bars` : "no run"}</span></div>
           <div className="flex-1 min-h-0" data-testid="equity-curve">
             {curve.length > 0 && (
               <ResponsiveContainer width="100%" height="100%">
                 <AreaChart data={curve} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
                   <defs><linearGradient id="eq" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#eab308" stopOpacity={0.35} /><stop offset="100%" stopColor="#eab308" stopOpacity={0} /></linearGradient></defs>
-                  <XAxis dataKey="time" tick={{ fontSize: 9, fill: "#6b7280", fontFamily: "JetBrains Mono" }} tickFormatter={(t) => t.slice(5, 10)} minTickGap={60} stroke="#1f2937" />
+                  <XAxis dataKey="time" tick={{ fontSize: 9, fill: "#6b7280", fontFamily: "JetBrains Mono" }} tickFormatter={(t) => String(t).slice(5, 10)} minTickGap={60} stroke="#1f2937" />
                   <YAxis domain={["auto", "auto"]} tick={{ fontSize: 9, fill: "#6b7280", fontFamily: "JetBrains Mono" }} width={54} stroke="#1f2937" />
                   <Tooltip contentStyle={{ background: "#0c1017", border: "1px solid #374151", fontSize: 10, fontFamily: "JetBrains Mono" }} labelFormatter={(t) => dt(t)} />
                   <Area type="stepAfter" dataKey="equity" stroke="#eab308" fill="url(#eq)" strokeWidth={1.5} isAnimationActive={false} />
@@ -186,9 +198,6 @@ export default function BacktestLab({ feed, config }) {
           <button className="btn text-[9px]" onClick={() => setForm((f) => ({ ...f, weights: { trend: 1, sr: 1, breakout: 0.9, momentum: 0.8, volume: 0.6, fibonacci: 0.7, elliott: 0.35, fvg: 0.9, pattern: 0.8, structure: 1 } }))} data-testid="bt-reset-weights">
             reset weights
           </button>
-        </div>
-        <div className="px-3 pt-2 pb-1 text-[10px] text-mute leading-snug">
-          Edit weight (w) then Run Backtest to test the change — applies to this run only.
         </div>
         <div className="overflow-auto" data-testid="attribution-table">
           <table className="tbl">
