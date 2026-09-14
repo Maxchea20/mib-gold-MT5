@@ -34,7 +34,7 @@ class MT5Adapter(DataAdapter):
     name = "mt5"
 
     def __init__(self, symbol: str | None = None):
-        import MetaTrader5 as mt5  # noqa - Windows only
+        import MetaTrader5 as mt5
         self.mt5 = mt5
         self.symbol = symbol or os.environ.get("MT5_SYMBOL", "GOLD")
         self.server_offset = timedelta(hours=float(os.environ.get("MT5_SERVER_UTC_OFFSET_HOURS", "0")))
@@ -91,12 +91,14 @@ class MT5Adapter(DataAdapter):
         return Tick(datetime.fromtimestamp(t.time, tz=timezone.utc) - self.server_offset, t.bid, t.ask)
 
     def m1_history(self, bars: int) -> pd.DataFrame:
-        want = max(200, min(int(bars or 8000), 20000))
-        for n in (want, 5000, 1500, 500):
-            rates = self.mt5.copy_rates_from_pos(self.symbol, self.mt5.TIMEFRAME_M1, 1, n)
-            if rates is not None and len(rates) > 0:
-                return self._frame(rates)
-        return self._frame(None)
+        want = max(200, min(int(bars or 8000), 100000))
+        rates = self.mt5.copy_rates_from_pos(self.symbol, self.mt5.TIMEFRAME_M1, 1, want)
+        if rates is None or len(rates) == 0:
+            for n in (20000, 8000, 2000, 500):
+                rates = self.mt5.copy_rates_from_pos(self.symbol, self.mt5.TIMEFRAME_M1, 1, n)
+                if rates is not None and len(rates) > 0:
+                    break
+        return self._frame(rates)
 
     def m1_range(self, start: datetime, end: datetime) -> pd.DataFrame:
         rates = self.mt5.copy_rates_range(self.symbol, self.mt5.TIMEFRAME_M1, start + self.server_offset, end + self.server_offset)
