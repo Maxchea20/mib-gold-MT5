@@ -89,18 +89,39 @@ export default function BacktestLab({ feed }) {
   const [trades, setTrades] = useState([]);
   const [err, setErr] = useState(null);
 
+  const finish = async (id) => {
+    try {
+      const r = await api.backtest(id);
+      if (!r) return;
+      if (r.status === "error") { setErr(r.error || "backtest error"); setProgress(1); return; }
+      if (r.status === "running" || r.status === "pending") {
+        if (typeof r.progress === "number") setProgress(r.progress);
+        return;
+      }
+      if (r.stats || r.status === "done") {
+        setResult(r);
+        setProgress(1);
+        try { setTrades(await api.backtestTrades(id)); } catch (_) { setTrades([]); }
+      }
+    } catch (e) {
+      setErr(e?.response?.data?.detail || e.message);
+    }
+  };
+
   useEffect(() => {
-    const b = feed.backtest; if (!b || b.id !== runId) return;
-    setProgress(b.progress);
-    if (b.done) finish(runId);
+    const b = feed.backtest;
+    if (!b || (runId && b.id !== runId)) return;
+    if (typeof b.progress === "number") setProgress(b.progress);
+    if (b.error) setErr(b.error);
+    if (b.done && (runId || b.id)) finish(runId || b.id);
   }, [feed.backtest, runId]); // eslint-disable-line
 
-  const finish = async (id) => {
-    const r = await api.backtest(id);
-    if (r.status === "error") { setErr(r.error); return; }
-    setResult(r);
-    setTrades(await api.backtestTrades(id));
-  };
+  useEffect(() => {
+    if (!runId || result || err) return;
+    finish(runId);
+    const t = setInterval(() => finish(runId), 1500);
+    return () => clearInterval(t);
+  }, [runId, result, err]); // eslint-disable-line
 
   const run = async () => {
     setErr(null); setResult(null); setTrades([]); setProgress(0);
@@ -141,12 +162,12 @@ export default function BacktestLab({ feed }) {
           <Field label="days"><input className="input" type="number" value={form.days} onChange={set("days")} /></Field>
           <Field label="layers"><input className="input" type="number" value={form.max_layers} onChange={set("max_layers")} /></Field>
         </div>
-        <div className="px-3 pb-3 text-[10px] text-mute">0.01 lot × SL $3 = $3 risk. TP $3 = 1R scalp. Not demo balance.</div>
+        <div className="px-3 pb-3 text-[10px] text-mute">0.01 lot × SL $3 = $3 risk. TP $3 = 1R scalp.</div>
         <div className="px-3 pb-3 flex flex-col gap-2">
           <button className="btn active w-full" onClick={run} disabled={!!running}>{running ? `running ${(progress * 100).toFixed(0)}%` : "run backtest"}</button>
           <button className="btn w-full" disabled={!payload} onClick={() => downloadBlob(`${stem}.json`, JSON.stringify(payload, null, 2), "application/json")}>download JSON</button>
-          <button className="btn w-full" disabled={!payload} onClick={() => downloadBlob(`${stem}.txt`, toTxt(payload), "text/plain")}>
-download TXT</button>
+          <button className="btn w-full" disabled={!payload} onClick={() => downloadBlob(`${stem}.txt`, toTxt(payload), "text/plain")}>download TXT</button>
+          {runId && <div className="text-[9px] mono text-mute break-all">{runId}</div>}
           {payload && <div className="text-[9px] mono text-mute break-all">{stem}</div>}
           {err && <div className="text-bear text-[10px] mono">{err}</div>}
         </div>
@@ -155,7 +176,7 @@ download TXT</button>
       <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-y-auto">
         <div className="p-3 border-b border-[var(--hair)]">
           <div className="text-[10px] mono uppercase tracking-widest text-mute mb-2">
-            Report {result?.id || "—"} · {result?.range ? `${String(result.range.start).slice(0, 10)} → ${String(result.range.end).slice(0, 10)}` : "no run"}
+            Report {result?.id || "—"} · {result?.range ? `${String(result.range.start).slice(0, 10)} → ${String(result.range.end).slice(0, 10)}` : (running ? "loading result…" : "no run")}
             {result?.config ? ` · lot ${result.config.fixed_lots} SL ${result.config.sl_dollars} TP ${result.config.tp_dollars}` : ""}
           </div>
           <div className="grid grid-cols-8 gap-3 mono text-[12px]">
