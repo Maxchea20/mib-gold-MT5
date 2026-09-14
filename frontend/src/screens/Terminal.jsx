@@ -5,23 +5,16 @@ import LayersPanel from "@/components/LayersPanel";
 import { api } from "@/lib/api";
 import { hhmmss } from "@/lib/format";
 
-export default function Terminal({ feed, config }) {
+export default function Terminal({ feed }) {
   const { status, tick, layers, analysis, account, barUpdates, lastTrades, setStatus } = feed;
   const [events, setEvents] = useState([]);
-  const [liveWeights, setLiveWeights] = useState(null);
   useEffect(() => { api.events().then(setEvents).catch(() => {}); }, [lastTrades]);
-  useEffect(() => { api.weights().then(setLiveWeights).catch(() => {}); }, []);
 
   const toggleAuto = async () => {
     const r = await api.setAutoTrade(!status?.auto_trade);
     setStatus((s) => ({ ...s, auto_trade: r.auto_trade }));
   };
   const closeLayer = async (id) => { try { await api.closeLayer(id); } catch (e) { console.error(e); } };
-  const changeWeight = async (engine, value) => {
-    setLiveWeights((w) => ({ ...w, [engine]: value }));
-    try { await api.setWeights({ [engine]: value }); } catch (e) { console.error(e); }
-  };
-  const resetWeights = async () => { try { setLiveWeights(await api.resetWeights()); } catch (e) { console.error(e); } };
 
   return (
     <div className="flex-1 flex min-h-0" data-testid="terminal-screen">
@@ -31,7 +24,7 @@ export default function Terminal({ feed, config }) {
       </div>
       <aside className="w-[400px] shrink-0 flex flex-col min-h-0">
         <div className="flex-1 min-h-0">
-          <AgentBoard analysis={analysis} weights={liveWeights ?? config?.weights} editableWeights onWeightChange={changeWeight} onResetWeights={resetWeights} />
+          <AgentBoard analysis={analysis} theses={status?.theses || []} book={status?.book_rules} />
         </div>
         <div className="h-44 shrink-0 panel border-t flex flex-col min-h-0">
           <div className="panel-head">
@@ -43,7 +36,7 @@ export default function Terminal({ feed, config }) {
             {[...events].reverse().map((e, i) => (
               <div key={i} className="py-0.5 border-b border-[rgba(31,41,55,.5)] flex gap-2">
                 <span className="text-mute shrink-0">{hhmmss(e.time)}</span>
-                <span className={e.msg.startsWith("OPEN") ? "text-bull" : "text-dim"}>{e.msg}</span>
+                <span className={e.msg.startsWith("OPEN") || e.msg.startsWith("THESIS") ? "text-bull" : "text-dim"}>{e.msg}</span>
               </div>
             ))}
           </div>
