@@ -9,7 +9,6 @@ Direction = Literal["long", "short", "neutral"]
 
 @dataclass
 class Signal:
-    """The standardized engine contract. Every engine returns exactly this."""
     signal: Direction
     confidence: float
     reason: str
@@ -61,6 +60,7 @@ class Layer:
     session: str = ""
     bias: Dict[str, Any] = field(default_factory=dict)
     ticket: Optional[int] = None
+    tp: Optional[float] = None
 
     @property
     def sign(self) -> int:
@@ -74,7 +74,6 @@ class Layer:
         return 0.0 if risk_dist == 0 else (price - self.entry) * self.sign / risk_dist
 
     def worst_case_loss(self, contract_size: float) -> float:
-        """Loss if current SL is hit; 0 when SL already locks profit."""
         return max(0.0, (self.entry - self.sl) * self.sign * self.lots * contract_size)
 
 
@@ -98,7 +97,6 @@ def utcnow() -> datetime:
 
 
 def _clean(obj):
-    """Make raw_data JSON-safe (numpy scalars, datetimes)."""
     import numpy as np
     if isinstance(obj, dict):
         return {str(k): _clean(v) for k, v in obj.items()}
