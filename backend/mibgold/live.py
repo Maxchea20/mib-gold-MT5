@@ -10,13 +10,14 @@ import pandas as pd
 from .adapters.base import DataAdapter, Tick
 from .adapters.resample import all_frames, completed_only
 from .book import PositionBook
+from .brain import TradeBrain
 from .consensus import Consensus
 from .engines import EngineSuite
 from .engines.utils import safe_atr
 from .news import NewsGate, NewsInterpreter
 from .risk import RiskManager, ClampedAllocation
 from .strategy import TopDownStrategy, StrategyConfig
-from .trailing import TrailingTP
+from .trailing import TrailingTP, TrailingConfig
 from .journal import close_record
 from .bars_cache import load_m1, merge_live, upsert_m1
 
@@ -32,13 +33,20 @@ class LiveEngine:
         self.connection = adapter.connect()
         self.spec = adapter.symbol_spec()
         acc = adapter.account()
-        max_layers = int(os.environ.get("MAX_LAYERS", "3"))
+        max_layers = int(os.environ.get("MAX_LAYERS", "1"))
         budget = float(os.environ.get("RISK_BUDGET_PCT", "0.10"))
         min_risk_usd = float(os.environ.get("MIN_RISK_USD", "10.0"))
         max_risk_usd = float(os.environ.get("MAX_RISK_USD", "100.0"))
         allocation = ClampedAllocation(min_usd=min_risk_usd, max_usd=max_risk_usd)
         self.risk = RiskManager(self.spec, budget_pct=budget, max_layers=max_layers, allocation=allocation)
-        self.book = PositionBook(self.spec, self.risk, TrailingTP(), float(acc["balance"]), mode="live" if adapter.name == "mt5" else "paper")
+        # Hard TP book: do not let trail steal the $5 target.
+        self.book = PositionBook(self.spec, self.risk, TrailingTP(TrailingConfig(activate_r=999)), float(acc["balance"]),
+                                 mode="live" if adapter.name == "mt5" else "paper")
+        self.fixed_lots = float(os.environ.get("FIXED_LOTS", "0.02"))
+        self.sl_dollars = float(os.environ.get("SL_DOLLARS", "2"))
+        self.tp_dollars = float(os.environ.get("TP_DOLLARS", "5"))
+        self.brain = TradeBrain(dead_min=float(os.environ.get("DEAD_FILL_MIN", "20")),
+                                dead_r=float(os.environ.get("DEAD_FILL_R", "0.15")))
         session_thr_env = os.environ.get("SESSION_THRESHOLDS")
         session_min_env = os.environ.get("SESSION_MIN_ALIGNED_OVERRIDE")
         session_thresholds = json.loads(session_thr_env) if session_thr_env else None
@@ -107,6 +115,8 @@ class LiveEngine:
             "today_pnl": round(today, 2), "today_pnl_text": ("Floating +" if today >= 0 else "Floating -") + f"${abs(today):,.2f}",
             "news": self.gate_state, "advisory": self.interpreter.current(self.tick.time) if self.tick else None,
             "analysis": self.analysis, "m5_atr": round(self.m5_atr, 3), "last_m5": self.last_m5.isoformat() if self.last_m5 else None,
+            "book_rules": {"layers": self.risk.max_layers, "lot": self.fixed_lots, "sl": self.sl_dollars, "tp": self.tp_dollars},
+            "theses": [t.to_dict() for t in self.brain.theses.values()],
         }
 
     def _tick_payload(self) -> dict:
@@ -115,7 +125,8 @@ class LiveEngine:
         today = snap["balance"] - self.day_start_balance + snap["floating_pnl"]
         return {"type": "tick", "tick": self.tick.to_dict(), "equity": snap["equity"], "balance": snap["balance"],
                 "floating_pnl": snap["floating_pnl"], "risk_used_pct": snap["risk_used_pct"], "risk_used_usd": snap["risk_used_usd"],
-                "today_pnl": round(today, 2), "layers": snap["layers"], "news": self.gate_state}
+                "today_pnl": round(today, 2), "layers": snap["layers"], "news": self.gate_state,
+                "theses": [t.to_dict() for t in self.brain.theses.values()]}
 
     async def run(self):
         self.started = True
@@ -154,10 +165,26 @@ class LiveEngine:
         self.last_minute = minute
         self.gate_state = self.gate.check(now)
         await self.interpreter.poll(now)
-        if first or minute.minute % 5 == 0:
+        if self.book.layers or first or minute.minute % 5 == 0:
             self.rebuild_frames(minute)
+        if self.book.layers and self.tick:
+            await self._review_open(now)
+        if first or minute.minute % 5 == 0:
             await self._on_m5_close(minute, now)
         await self.broadcast({"type": "bars", "bars": {tf: self.chart(tf, 2) for tf in TFS}, "news": self.gate_state})
+
+    async def _review_open(self, now: datetime):
+        price = self.tick.mid
+        for layer in list(self.book.layers):
+            rev = self.brain.review(layer, price, now, self.spec.contract_size)
+            self._log(f"THESIS L{layer.layer_number} {rev['action']} {rev['age_min']}m r={rev['r']:+.2f}")
+            if rev["action"] == "time_stop":
+                px = self.tick.bid if layer.sign > 0 else self.tick.ask
+                if self.adapter.name == "mt5" and layer.ticket:
+                    self.adapter.close_position(layer.ticket, layer.lots, layer.direction)
+                rec = self.book.close_layer(layer, px, "TIME_STOP", now)
+                await self._closed(rec)
+            await self.broadcast({"type": "thesis", "review": rev})
 
     async def _on_m5_close(self, minute: datetime, now: datetime):
         self.last_m5 = minute
@@ -171,17 +198,25 @@ class LiveEngine:
             blocked = "Auto-trade paused by operator"
         elif self.analysis["fire"] and self.tick:
             prop = self.strategy.propose_entry(self.analysis, self.frames, self.book, self.spec, self.tick.bid, self.tick.ask)
-            if prop and not prop.get("blocked"):
-                d = prop["decision"]
-                order = self.adapter.place_order(prop["direction"], d.lots, prop["sl"])
+            if prop and (not prop.get("blocked") or self.fixed_lots):
+                direction = prop.get("direction") or self.analysis.get("bias", {}).get("direction")
+                entry = self.tick.ask if direction == "long" else self.tick.bid
+                sl = entry - self.sl_dollars if direction == "long" else entry + self.sl_dollars
+                tp = entry + self.tp_dollars if direction == "long" else entry - self.tp_dollars
+                lots = self.fixed_lots
+                risk_usd = lots * self.sl_dollars * self.spec.contract_size
+                order = self.adapter.place_order(direction, lots, sl)
                 if order.get("ok"):
-                    entry = order.get("price") or prop["entry"]
-                    opened = self.book.open_layer(prop["direction"], entry, prop["sl"], d.lots, d.risk_usd, now,
+                    entry = order.get("price") or entry
+                    sl = entry - self.sl_dollars if direction == "long" else entry + self.sl_dollars
+                    tp = entry + self.tp_dollars if direction == "long" else entry - self.tp_dollars
+                    opened = self.book.open_layer(direction, entry, sl, lots, risk_usd, now,
                                                   self.analysis["votes"], self.analysis["entry"], self.analysis["summary"],
-                                                  self.analysis["session"], self.analysis["bias"], ticket=order.get("ticket"))
+                                                  self.analysis["session"], self.analysis["bias"], ticket=order.get("ticket"), tp=tp)
+                    self.brain.open_thesis(opened, self.analysis)
                     rec = self.book.open_records(self.tick.mid)[-1]
-                    self._log(f"OPEN L{opened.layer_number} {opened.direction} {d.lots} @ {entry:.2f} SL {prop['sl']:.2f} | {self.analysis['summary']}")
-                    await self.broadcast({"type": "trade_opened", "trade": rec})
+                    self._log(f"OPEN L{opened.layer_number} {opened.direction} {lots} @ {entry:.2f} SL {sl:.2f} TP {tp:.2f} | {self.analysis['summary']}")
+                    await self.broadcast({"type": "trade_opened", "trade": rec, "thesis": self.brain.theses[opened.id].to_dict()})
                 else:
                     blocked = f"Order rejected: {order}"
             elif prop:
@@ -191,6 +226,7 @@ class LiveEngine:
         await self.broadcast({"type": "analysis", "analysis": self.analysis, "layers": self.book.open_records(self.tick.mid if self.tick else 0)})
 
     async def _closed(self, rec: dict):
+        self.brain.close(rec.get("id"), self.tick.time if self.tick else datetime.utcnow(), rec.get("exit_reason", ""))
         self._log(f"CLOSE L{rec['layer_number']} {rec['direction']} {rec['exit_reason']} @ {rec['exit_price']} -> {rec['r_text']} / {rec['pnl_text']}")
         await self.persist(rec)
         await self.broadcast({"type": "trade_closed", "trade": rec})
