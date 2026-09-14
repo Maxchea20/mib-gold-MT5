@@ -94,13 +94,16 @@ class Backtest:
             if analysis["fire"] and gate["blocked"]:
                 blocked_reason = f"News gate: {gate['event']['title']}"
             elif analysis["fire"]:
-                prop = self.strategy.propose_entry(analysis, window, self.book, self.spec, bid, ask)
-                if prop and (not prop.get("blocked") or self.fixed_lots):
-                    direction = prop["direction"]
-                    entry = prop["entry"] + self.slippage * (1 if direction == "long" else -1)
-                    sl_dist = float(self.sl_dollars) if self.sl_dollars else abs(entry - prop["sl"])
+                prop = self.strategy.propose_entry(analysis, window, self.book, self.spec, bid, ask) or {}
+                direction = prop.get("direction") or analysis.get("bias", {}).get("direction")
+                if prop.get("blocked") and "direction" not in prop:
+                    blocked_reason = prop["blocked"]
+                elif direction in ("long", "short") and (not prop.get("blocked") or self.fixed_lots):
+                    raw_entry = prop.get("entry", ask if direction == "long" else bid)
+                    entry = raw_entry + self.slippage * (1 if direction == "long" else -1)
+                    sl_dist = float(self.sl_dollars) if self.sl_dollars else abs(entry - float(prop.get("sl") or entry))
                     sl = entry - sl_dist if direction == "long" else entry + sl_dist
-                    lots = float(self.fixed_lots) if self.fixed_lots else prop["decision"].lots
+                    lots = float(self.fixed_lots) if self.fixed_lots else (prop.get("decision").lots if prop.get("decision") else 0)
                     if lots > 0 and sl_dist > 0:
                         risk_usd = lots * sl_dist * self.spec.contract_size
                         tp = None
@@ -112,7 +115,7 @@ class Backtest:
                             opened = self.book.open_layer(direction, entry, sl, lots, risk_usd, now,
                                                           analysis["votes"], analysis["entry"], analysis["summary"],
                                                           analysis["session"], analysis["bias"], tp=tp)
-                elif prop:
+                elif prop.get("blocked"):
                     blocked_reason = prop["blocked"]
             snap = self.book.snapshot(close)
             self.equity_curve.append({"time": now.isoformat(), "equity": snap["equity"], "balance": snap["balance"]})
