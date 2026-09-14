@@ -47,7 +47,7 @@ class LiveEngine:
         cfg.struct_oppose_score = float(os.environ.get("STRUCT_OPPOSE_SCORE", cfg.struct_oppose_score))
         self.strategy = TopDownStrategy(EngineSuite(), Consensus(session_threshold=session_thresholds, session_min_aligned=session_min_aligned), cfg)
         self.auto_trade = os.environ.get("AUTO_TRADE", "true").lower() == "true"
-        self.history_bars = int(os.environ.get("HISTORY_M1_BARS", str(120 * 1440)))
+        self.history_bars = int(os.environ.get("HISTORY_M1_BARS", "8000"))
         self.tick: Optional[Tick] = None
         self.frames: Dict[str, pd.DataFrame] = {}
         self.analysis: dict = {}
@@ -63,10 +63,14 @@ class LiveEngine:
     # ---------- data ----------
     def rebuild_frames(self, now: datetime) -> None:
         m1 = self.adapter.m1_history(self.history_bars)
+        log.info("m1 history rows=%s symbol=%s", 0 if m1 is None else len(m1), getattr(self.adapter, "symbol", "?"))
+        if m1 is None or m1.empty:
+            self.frames = {}
+            return
         frames = all_frames(m1, TFS)
         cut = pd.Timestamp(now.replace(second=0, microsecond=0))
         self.frames = {tf: completed_only(df, tf, cut) if tf != "M1" else df for tf, df in frames.items()}
-        if len(self.frames["M5"]) > 20:
+        if len(self.frames.get("M5", [])) > 20:
             self.m5_atr = safe_atr(self.frames["M5"].tail(60))
 
     def chart(self, tf: str, n: int = 400) -> list:
