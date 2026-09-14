@@ -43,7 +43,7 @@ class LiveEngine:
                                  mode="live" if adapter.name == "mt5" else "paper")
         self.fixed_lots = float(os.environ.get("FIXED_LOTS", "0.02"))
         self.sl_dollars = float(os.environ.get("SL_DOLLARS", "1.5"))
-        self.tp_dollars = float(os.environ.get("TP_DOLLARS", "2.5"))
+        self.tp_dollars = float(os.environ.get("TP_DOLLARS", "3"))
         self.brain = TradeBrain(dead_min=float(os.environ.get("DEAD_FILL_MIN", "20")),
                                 dead_r=float(os.environ.get("DEAD_FILL_R", "0.15")))
         session_thr_env = os.environ.get("SESSION_THRESHOLDS")
