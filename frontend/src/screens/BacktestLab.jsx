@@ -60,8 +60,8 @@ function toTxt(p) {
 
 export default function BacktestLab({ feed }) {
   const [form, setForm] = useState({
-    days: 90, start_balance: 250, max_layers: 3, budget_pct: 0.1, slippage_points: 5, use_news_gate: true,
-    csv_path: DEFAULT_CSV, fixed_lots: 0.01, sl_dollars: 3, tp_dollars: 3,
+    days: 90, start_balance: 250, max_layers: 1, budget_pct: 0.1, slippage_points: 5, use_news_gate: true,
+    csv_path: DEFAULT_CSV, fixed_lots: 0.01, sl_dollars: 2, tp_dollars: 5,
     bias_min_score: 0.10, struct_oppose_score: 0.15, min_risk_usd: 1, max_risk_usd: 100,
     weights: { trend: 1, sr: 1, breakout: 0.9, momentum: 0.8, volume: 0.6, fibonacci: 0.7, elliott: 0.35, fvg: 0.9, pattern: 0.8, structure: 1 },
   });
@@ -130,7 +130,7 @@ export default function BacktestLab({ feed }) {
   return (
     <div className="flex-1 flex min-h-0">
       <div className="w-[260px] shrink-0 border-r border-[var(--hair)] overflow-y-auto">
-        <div className="panel-head">Your book</div>
+        <div className="panel-head">Your book · L1 SL2 TP5 no London</div>
         <div className="p-3 grid grid-cols-2 gap-2">
           <Field label="capital $"><input className="input" type="number" value={form.start_balance} onChange={set("start_balance")} /></Field>
           <Field label="lot"><input className="input" type="number" step="0.01" value={form.fixed_lots} onChange={set("fixed_lots")} /></Field>
