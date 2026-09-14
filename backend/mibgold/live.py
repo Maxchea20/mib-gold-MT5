@@ -18,6 +18,7 @@ from .risk import RiskManager, ClampedAllocation
 from .strategy import TopDownStrategy, StrategyConfig
 from .trailing import TrailingTP
 from .journal import close_record
+from .bars_cache import load_m1, merge_live, upsert_m1
 
 log = logging.getLogger("mibgold.live")
 TFS = ("M5", "M15", "H1", "H4", "D1")
@@ -38,7 +39,7 @@ class LiveEngine:
         allocation = ClampedAllocation(min_usd=min_risk_usd, max_usd=max_risk_usd)
         self.risk = RiskManager(self.spec, budget_pct=budget, max_layers=max_layers, allocation=allocation)
         self.book = PositionBook(self.spec, self.risk, TrailingTP(), float(acc["balance"]), mode="live" if adapter.name == "mt5" else "paper")
-        session_thr_env = os.environ.get("SESSION_THRESHOLDS")  # JSON string, e.g. {"ny": 0.35}
+        session_thr_env = os.environ.get("SESSION_THRESHOLDS")
         session_min_env = os.environ.get("SESSION_MIN_ALIGNED_OVERRIDE")
         session_thresholds = json.loads(session_thr_env) if session_thr_env else None
         session_min_aligned = json.loads(session_min_env) if session_min_env else None
@@ -47,7 +48,7 @@ class LiveEngine:
         cfg.struct_oppose_score = float(os.environ.get("STRUCT_OPPOSE_SCORE", cfg.struct_oppose_score))
         self.strategy = TopDownStrategy(EngineSuite(), Consensus(session_threshold=session_thresholds, session_min_aligned=session_min_aligned), cfg)
         self.auto_trade = os.environ.get("AUTO_TRADE", "true").lower() == "true"
-        self.history_bars = int(os.environ.get("HISTORY_M1_BARS", "8000"))
+        self.history_bars = int(os.environ.get("HISTORY_M1_BARS", "50000"))
         self.tick: Optional[Tick] = None
         self.frames: Dict[str, pd.DataFrame] = {}
         self.analysis: dict = {}
@@ -60,15 +61,29 @@ class LiveEngine:
         self.events: list = []
         self.started = False
 
-    # ---------- data ----------
+    def _symbol(self) -> str:
+        return getattr(self.adapter, "symbol", None) or self.spec.symbol
+
     def rebuild_frames(self, now: datetime) -> None:
-        m1 = self.adapter.m1_history(self.history_bars)
-        log.info("m1 history rows=%s symbol=%s", 0 if m1 is None else len(m1), getattr(self.adapter, "symbol", "?"))
+        live_m1 = self.adapter.m1_history(self.history_bars)
+        cached = load_m1(self._symbol(), self.history_bars)
+        m1 = merge_live(cached, live_m1)
+        log.info("m1 history rows=%s live=%s cached=%s symbol=%s",
+                 0 if m1 is None else len(m1),
+                 0 if live_m1 is None else len(live_m1),
+                 0 if cached is None else len(cached),
+                 self._symbol())
         if m1 is None or m1.empty:
             self.frames = {}
             return
+        try:
+            upsert_m1(self._symbol(), live_m1.tail(3000) if live_m1 is not None and not live_m1.empty else m1.tail(0))
+        except Exception:
+            log.exception("bar cache write failed")
         frames = all_frames(m1, TFS)
         cut = pd.Timestamp(now.replace(second=0, microsecond=0))
+        if cut.tzinfo is None:
+            cut = cut.tz_localize("UTC")
         self.frames = {tf: completed_only(df, tf, cut) if tf != "M1" else df for tf, df in frames.items()}
         if len(self.frames.get("M5", [])) > 20:
             self.m5_atr = safe_atr(self.frames["M5"].tail(60))
@@ -81,7 +96,6 @@ class LiveEngine:
         return [{"time": int(t.timestamp()), "open": float(o), "high": float(h), "low": float(l), "close": float(c), "volume": int(v)}
                 for t, o, h, l, c, v in zip(rows["time"], rows["open"], rows["high"], rows["low"], rows["close"], rows["tick_volume"])]
 
-    # ---------- state ----------
     def status(self) -> dict:
         price = self.tick.mid if self.tick else 0.0
         snap = self.book.snapshot(price)
@@ -103,7 +117,6 @@ class LiveEngine:
                 "floating_pnl": snap["floating_pnl"], "risk_used_pct": snap["risk_used_pct"], "risk_used_usd": snap["risk_used_usd"],
                 "today_pnl": round(today, 2), "layers": snap["layers"], "news": self.gate_state}
 
-    # ---------- loop ----------
     async def run(self):
         self.started = True
         poll = float(os.environ.get("TICK_POLL_MS", "100")) / 1000
@@ -127,7 +140,6 @@ class LiveEngine:
         minute = now.replace(second=0, microsecond=0)
         if self.last_minute is None or minute > self.last_minute:
             await self._on_minute(minute, now)
-        # per-tick exits + trailing (worst-case: longs exit on bid, shorts on ask)
         prev_sl = {l.id: l.sl for l in self.book.layers}
         for rec in self.book.on_bar(tick.ask, tick.bid, tick.mid, self.m5_atr, now):
             await self._closed(rec)
