@@ -1,11 +1,16 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from "recharts";
-import TradeCard from "@/components/TradeCard";
 import { api } from "@/lib/api";
-import { pct, rTxt, usd, ENGINE_ORDER, dt } from "@/lib/format";
+import { pct, rTxt, usd, ENGINE_ORDER } from "@/lib/format";
 
 const Field = ({ label, children }) => (<label className="flex flex-col gap-0.5"><span className="text-[9px] mono uppercase tracking-widest text-mute">{label}</span>{children}</label>);
 const DEFAULT_CSV = "data/GOLD#_M1_202606031118_202609141118.csv";
+
+function shortTime(t) {
+  if (!t) return "—";
+  const s = String(t).replace("T", " ");
+  return s.slice(5, 16);
+}
 
 export default function BacktestLab({ feed }) {
   const [form, setForm] = useState({
@@ -47,16 +52,26 @@ export default function BacktestLab({ feed }) {
   const exits = s.by_exit || {};
   const sl = exits.SL || 0;
   const trail = exits.TRAIL_TP || 0;
-  const slPct = s.trades ? sl / s.trades : 0;
-  const trailPct = s.trades ? trail / s.trades : 0;
+
+  const bySess = {};
+  const bySide = {};
+  trades.forEach((t) => {
+    const sess = t.session || "?";
+    const side = t.direction || t.side || "?";
+    const r = Number(t.r_multiple ?? t.r ?? 0);
+    const pnl = Number(t.pnl ?? t.pnl_usd ?? 0);
+    bySess[sess] = bySess[sess] || { n: 0, r: 0, pnl: 0, w: 0 };
+    bySess[sess].n += 1; bySess[sess].r += r; bySess[sess].pnl += pnl; if (r > 0 || pnl > 0) bySess[sess].w += 1;
+    bySide[side] = bySide[side] || { n: 0, r: 0, pnl: 0, w: 0 };
+    bySide[side].n += 1; bySide[side].r += r; bySide[side].pnl += pnl; if (r > 0 || pnl > 0) bySide[side].w += 1;
+  });
 
   return (
     <div className="flex-1 flex min-h-0" data-testid="backtest-screen">
-      <div className="w-[280px] shrink-0 border-r border-[var(--hair)] flex flex-col min-h-0 overflow-y-auto">
+      <div className="w-[240px] shrink-0 border-r border-[var(--hair)] overflow-y-auto">
         <div className="panel-head">Run</div>
         <div className="p-3 flex flex-col gap-2">
           <button className="btn active" onClick={run} disabled={!!running}>{running ? `running ${(progress * 100).toFixed(0)}%` : "run backtest"}</button>
-          {running && <div className="conf-track"><div className="conf-fill bg-gold" style={{ width: `${progress * 100}%` }} /></div>}
           {err && <div className="text-bear text-[10px] mono">{err}</div>}
           <button className="btn" onClick={() => setShowCfg((v) => !v)}>{showCfg ? "hide config" : "show config"}</button>
         </div>
@@ -64,17 +79,13 @@ export default function BacktestLab({ feed }) {
           <div className="px-3 pb-3 grid grid-cols-2 gap-2">
             <Field label="days"><input className="input" type="number" value={form.days} onChange={set("days")} /></Field>
             <Field label="start $"><input className="input" type="number" value={form.start_balance} onChange={set("start_balance")} /></Field>
-            <Field label="layers"><input className="input" type="number" value={form.max_layers} onChange={set("max_layers")} /></Field>
-            <Field label="budget"><input className="input" type="number" step="0.01" value={form.budget_pct} onChange={set("budget_pct")} /></Field>
-            <Field label="news"><input type="checkbox" className="mt-1" checked={form.use_news_gate} onChange={set("use_news_gate", false)} /></Field>
             <div className="col-span-2"><Field label="csv"><input className="input" value={form.csv_path} onChange={(e) => setForm((f) => ({ ...f, csv_path: e.target.value }))} /></Field></div>
           </div>
         )}
-        <div className="px-3 pb-3 text-[10px] text-mute">GOLD# M1 CSV · H1/M15/M5 · trail +1R · no time-stop</div>
       </div>
 
-      <div className="flex-1 flex flex-col min-w-0 min-h-0">
-        <div className="shrink-0 border-b border-[var(--hair)] p-3" data-testid="bt-report">
+      <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-y-auto">
+        <div className="shrink-0 p-3 border-b border-[var(--hair)]" data-testid="bt-report">
           <div className="text-[10px] mono uppercase tracking-widest text-mute mb-2">
             Report {result?.id || "—"} · {result?.range ? `${String(result.range.start).slice(0, 10)} → ${String(result.range.end).slice(0, 10)} · ${result.range.m5_bars} M5` : "no run"}
           </div>
@@ -86,50 +97,80 @@ export default function BacktestLab({ feed }) {
             <Stat k="net" v={s.net_pnl_text || usd(s.net_pnl)} good={s.net_pnl >= 0} />
             <Stat k="return" v={s.return_pct == null ? "—" : pct(s.return_pct, 2)} good={s.return_pct >= 0} />
             <Stat k="final" v={result ? usd(result.final_balance) : "—"} gold />
-            <Stat k="SL / trail" v={s.trades ? `${(slPct * 100).toFixed(0)}% / ${(trailPct * 100).toFixed(0)}%` : "—"} />
+            <Stat k="SL / trail" v={s.trades ? `${((sl / s.trades) * 100).toFixed(0)}% / ${((trail / s.trades) * 100).toFixed(0)}%` : "—"} />
           </div>
-          <div className="mt-2 text-[10px] mono text-dim">
-            exits {Object.entries(exits).map(([k, v]) => `${k}:${v}`).join("  ") || "—"}
-          </div>
-          <div className="mt-3 overflow-auto">
-            <table className="tbl">
-              <thead><tr><th>engine</th><th>lead n</th><th>lead WR</th><th>edge</th><th>verdict</th></tr></thead>
-              <tbody>
-                {ENGINE_ORDER.map((k) => {
-                  const a = attr[k];
-                  if (!a) return null;
-                  return (
-                    <tr key={k} className="mono text-[10px]">
-                      <td>{a.engine || k}</td>
-                      <td>{a.strongest_count ?? 0}</td>
-                      <td>{a.strongest_win_rate == null ? "—" : pct(a.strongest_win_rate, 0)}</td>
-                      <td className={a.edge > 0 ? "text-bull" : a.edge < 0 ? "text-bear" : ""}>{a.edge == null ? "—" : (a.edge >= 0 ? "+" : "") + Number(a.edge).toFixed(2)}</td>
-                      <td>{a.recommendation || "—"}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+          <div className="mt-2 flex gap-6 text-[10px] mono text-dim">
+            {Object.entries(bySide).map(([k, v]) => (
+              <span key={k}>{k} {v.n}t WR {(v.w / v.n * 100).toFixed(0)}% {usd(v.pnl, true)}</span>
+            ))}
+            {Object.entries(bySess).map(([k, v]) => (
+              <span key={k}>{k} {v.n}t WR {(v.w / v.n * 100).toFixed(0)}% {usd(v.pnl, true)}</span>
+            ))}
           </div>
         </div>
-        <div className="h-[240px] shrink-0 border-b border-[var(--hair)]">
-          <div className="h-full" data-testid="equity-curve">
-            {(result?.equity_curve || []).length > 0 && (
-              <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={result.equity_curve} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
-                  <defs><linearGradient id="eq" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#eab308" stopOpacity={0.35} /><stop offset="100%" stopColor="#eab308" stopOpacity={0} /></linearGradient></defs>
-                  <XAxis dataKey="time" tick={{ fontSize: 9, fill: "#6b7280", fontFamily: "JetBrains Mono" }} tickFormatter={(t) => String(t).slice(5, 10)} minTickGap={60} stroke="#1f2937" />
-                  <YAxis domain={["auto", "auto"]} tick={{ fontSize: 9, fill: "#6b7280", fontFamily: "JetBrains Mono" }} width={54} stroke="#1f2937" />
-                  <Tooltip contentStyle={{ background: "#0c1017", border: "1px solid #374151", fontSize: 10 }} />
-                  <Area type="stepAfter" dataKey="equity" stroke="#eab308" fill="url(#eq)" strokeWidth={1.5} isAnimationActive={false} />
-                </AreaChart>
-              </ResponsiveContainer>
-            )}
-          </div>
+
+        <div className="h-[180px] shrink-0 border-b border-[var(--hair)]">
+          {(result?.equity_curve || []).length > 0 && (
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={result.equity_curve} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                <defs><linearGradient id="eq" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#eab308" stopOpacity={0.35} /><stop offset="100%" stopColor="#eab308" stopOpacity={0} /></linearGradient></defs>
+                <XAxis dataKey="time" tick={{ fontSize: 9, fill: "#6b7280" }} tickFormatter={(t) => String(t).slice(5, 10)} minTickGap={40} stroke="#1f2937" />
+                <YAxis domain={["auto", "auto"]} tick={{ fontSize: 9, fill: "#6b7280" }} width={48} stroke="#1f2937" />
+                <Tooltip contentStyle={{ background: "#0c1017", border: "1px solid #374151", fontSize: 10 }} />
+                <Area type="stepAfter" dataKey="equity" stroke="#eab308" fill="url(#eq)" strokeWidth={1.5} isAnimationActive={false} />
+              </AreaChart>
+            </ResponsiveContainer>
+          )}
         </div>
-        <div className="flex-1 min-h-0 overflow-y-auto p-2 flex flex-col gap-1.5">
-          <div className="text-[10px] mono uppercase tracking-widest text-mute px-1">Trades · {trades.length}</div>
-          {trades.map((t) => <TradeCard key={t.id} trade={t} />)}
+
+        <div className="shrink-0 px-3 py-2 border-b border-[var(--hair)]">
+          <table className="tbl">
+            <thead><tr><th>engine</th><th>n</th><th>WR</th><th>edge</th><th>verdict</th></tr></thead>
+            <tbody>
+              {ENGINE_ORDER.map((k) => {
+                const a = attr[k]; if (!a || !(a.strongest_count || a.edge)) return null;
+                return (
+                  <tr key={k} className="mono text-[10px]">
+                    <td>{a.engine || k}</td>
+                    <td>{a.strongest_count ?? 0}</td>
+                    <td>{a.strongest_win_rate == null ? "—" : pct(a.strongest_win_rate, 0)}</td>
+                    <td className={a.edge > 0 ? "text-bull" : "text-bear"}>{a.edge == null ? "—" : (a.edge >= 0 ? "+" : "") + Number(a.edge).toFixed(2)}</td>
+                    <td>{a.recommendation || "—"}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="flex-1 min-h-0 overflow-auto" data-testid="bt-blotter">
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th>time</th><th>side</th><th>L</th><th>session</th><th>in</th><th>out</th><th>exit</th><th>R</th><th>pnl</th>
+              </tr>
+            </thead>
+            <tbody>
+              {trades.map((t, i) => {
+                const r = Number(t.r_multiple ?? t.r ?? 0);
+                const pnl = Number(t.pnl ?? t.pnl_usd ?? 0);
+                const side = t.direction || t.side || "";
+                return (
+                  <tr key={t.id || i} className="mono text-[10px]">
+                    <td>{shortTime(t.exit_time || t.timestamp || t.time)}</td>
+                    <td className={side === "long" ? "text-bull" : "text-bear"}>{String(side).toUpperCase()}</td>
+                    <td>L{t.layer_number ?? t.layer ?? ""}</td>
+                    <td>{t.session || "—"}</td>
+                    <td>{t.entry ?? t.entry_price}</td>
+                    <td>{t.exit_price ?? t.exit}</td>
+                    <td>{t.exit_reason || t.exit_type || "—"}</td>
+                    <td className={r >= 0 ? "text-bull" : "text-bear"}>{rTxt(r)}</td>
+                    <td className={pnl >= 0 ? "text-bull" : "text-bear"}>{usd(pnl, true)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         </div>
       </div>
     </div>
