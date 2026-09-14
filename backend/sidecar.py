@@ -11,7 +11,12 @@ if __name__ == "__main__":
     root = Path(__file__).resolve().parent
     sys.path.insert(0, str(root))
     os.chdir(root)
-    os.environ.setdefault("BROKER_MODE", os.environ.get("BROKER_MODE", "sim"))
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(root / ".env")
+    except Exception:
+        pass
+    os.environ.setdefault("BROKER_MODE", "sim")
     os.environ.setdefault("HOST", "127.0.0.1")
     os.environ.setdefault("PORT", "8001")
     ui = root.parent / "frontend" / "build"
@@ -22,5 +27,5 @@ if __name__ == "__main__":
 
     host = os.environ["HOST"]
     port = int(os.environ["PORT"])
-    print(f"mib-gold engine on http://{host}:{port}  (API /api  UI / if frontend/build exists)")
+    print(f"mib-gold engine on http://{host}:{port}  mode={os.environ.get('BROKER_MODE')}  (API /api  UI / if frontend/build exists)")
     uvicorn.run(app, host=host, port=port, log_level="info")
