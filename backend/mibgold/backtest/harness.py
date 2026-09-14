@@ -26,11 +26,15 @@ class Backtest:
                  news_gate: Optional[NewsGate] = None, weights: Optional[dict] = None,
                  bias_min_score: Optional[float] = None, struct_oppose_score: Optional[float] = None,
                  session_thresholds: Optional[dict] = None, session_min_aligned: Optional[dict] = None,
-                 min_risk_usd: float = 10.0, max_risk_usd: float = 100.0):
+                 min_risk_usd: float = 10.0, max_risk_usd: float = 100.0,
+                 fixed_lots: Optional[float] = None, sl_dollars: Optional[float] = None, tp_dollars: Optional[float] = None):
         self.m1, self.spec = m1, spec
         self.slippage = slippage_points * spec.point
         self.warmup = warmup_bars
         self.gate = news_gate
+        self.fixed_lots = fixed_lots
+        self.sl_dollars = sl_dollars
+        self.tp_dollars = tp_dollars
         risk = RiskManager(spec, budget_pct=budget_pct, max_layers=max_layers,
                             allocation=ClampedAllocation(min_usd=min_risk_usd, max_usd=max_risk_usd))
         self.book = PositionBook(spec, risk, TrailingTP(), start_balance, mode="backtest")
@@ -45,7 +49,7 @@ class Backtest:
         self.progress = 0.0
         self.status = "pending"
         self.error: Optional[str] = None
-        self.bars: list = []          # per-bar replay frames for scrubbing
+        self.bars: list = []
         self.equity_curve: list = []
         self.result: Optional[dict] = None
         self._stop = False
@@ -91,12 +95,23 @@ class Backtest:
                 blocked_reason = f"News gate: {gate['event']['title']}"
             elif analysis["fire"]:
                 prop = self.strategy.propose_entry(analysis, window, self.book, self.spec, bid, ask)
-                if prop and not prop.get("blocked"):
-                    entry = prop["entry"] + self.slippage * (1 if prop["direction"] == "long" else -1)
-                    d = prop["decision"]
-                    opened = self.book.open_layer(prop["direction"], entry, prop["sl"], d.lots, d.risk_usd, now,
-                                                  analysis["votes"], analysis["entry"], analysis["summary"],
-                                                  analysis["session"], analysis["bias"])
+                if prop and (not prop.get("blocked") or self.fixed_lots):
+                    direction = prop["direction"]
+                    entry = prop["entry"] + self.slippage * (1 if direction == "long" else -1)
+                    sl_dist = float(self.sl_dollars) if self.sl_dollars else abs(entry - prop["sl"])
+                    sl = entry - sl_dist if direction == "long" else entry + sl_dist
+                    lots = float(self.fixed_lots) if self.fixed_lots else prop["decision"].lots
+                    if lots > 0 and sl_dist > 0:
+                        risk_usd = lots * sl_dist * self.spec.contract_size
+                        tp = None
+                        if self.tp_dollars:
+                            tp = entry + float(self.tp_dollars) if direction == "long" else entry - float(self.tp_dollars)
+                        if not self.fixed_lots and prop.get("blocked"):
+                            blocked_reason = prop["blocked"]
+                        else:
+                            opened = self.book.open_layer(direction, entry, sl, lots, risk_usd, now,
+                                                          analysis["votes"], analysis["entry"], analysis["summary"],
+                                                          analysis["session"], analysis["bias"], tp=tp)
                 elif prop:
                     blocked_reason = prop["blocked"]
             snap = self.book.snapshot(close)
@@ -113,7 +128,6 @@ class Backtest:
             self.progress = (i - self.warmup + 1) / max(1, n - self.warmup)
             if on_progress and i % 50 == 0:
                 on_progress(self.progress)
-        # flatten remaining layers at last close
         if len(m5):
             last = m5.iloc[-1]
             for layer in list(self.book.layers):
@@ -123,7 +137,8 @@ class Backtest:
             "id": self.id, "status": "done", "created": utcnow().isoformat(),
             "range": {"start": m5["time"].iloc[0].isoformat(), "end": m5["time"].iloc[-1].isoformat(), "m5_bars": int(n)},
             "config": {"start_balance": self.book.start_balance, "max_layers": self.book.risk.max_layers,
-                       "budget_pct": self.book.risk.budget_pct, "spread": self.spec.spread_price, "slippage": self.slippage},
+                       "budget_pct": self.book.risk.budget_pct, "spread": self.spec.spread_price, "slippage": self.slippage,
+                       "fixed_lots": self.fixed_lots, "sl_dollars": self.sl_dollars, "tp_dollars": self.tp_dollars},
             "stats": summary_stats(trades, self.book.start_balance),
             "attribution": attribution(trades, self.strategy.consensus.weights),
             "trades": trades,
@@ -133,8 +148,6 @@ class Backtest:
 
 
 class BacktestRunner:
-    """Runs backtests in a background thread and keeps the last N in memory."""
-
     def __init__(self):
         self.runs: Dict[str, Backtest] = {}
         self.order: list = []
