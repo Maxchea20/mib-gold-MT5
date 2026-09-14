@@ -1,6 +1,21 @@
 import axios from "axios";
 
-export const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
+function resolveBackend() {
+  if (process.env.REACT_APP_BACKEND_URL) {
+    return process.env.REACT_APP_BACKEND_URL.replace(/\/$/, "");
+  }
+  if (typeof window !== "undefined") {
+    if (window.__TAURI_INTERNALS__ || window.__TAURI__) {
+      return "http://127.0.0.1:8001";
+    }
+    if (window.location && window.location.origin && window.location.origin !== "null") {
+      return window.location.origin;
+    }
+  }
+  return "http://127.0.0.1:8001";
+}
+
+export const BACKEND_URL = resolveBackend();
 export const API = `${BACKEND_URL}/api`;
 export const WS_URL = BACKEND_URL.replace(/^http/, "ws") + "/api/ws";
 
