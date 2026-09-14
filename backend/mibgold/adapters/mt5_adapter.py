@@ -20,7 +20,6 @@ def _mt5_path() -> Optional[str]:
     p = Path(raw)
     if p.is_file():
         return str(p)
-    # common broker install names if the .env path was mangled by \t
     guesses = [
         Path(r"C:\Program Files\MetaTrader 5\terminal64.exe"),
         Path(r"C:\Program Files (x86)\MetaTrader 5\terminal64.exe"),
@@ -37,7 +36,7 @@ class MT5Adapter(DataAdapter):
     def __init__(self, symbol: str | None = None):
         import MetaTrader5 as mt5  # noqa - Windows only
         self.mt5 = mt5
-        self.symbol = symbol or os.environ.get("MT5_SYMBOL", "GOLD")  # XM names gold "GOLD"; some servers use XAUUSD
+        self.symbol = symbol or os.environ.get("MT5_SYMBOL", "GOLD")
         self.server_offset = timedelta(hours=float(os.environ.get("MT5_SERVER_UTC_OFFSET_HOURS", "0")))
         self._spec: Optional[SymbolSpec] = None
 
@@ -92,8 +91,12 @@ class MT5Adapter(DataAdapter):
         return Tick(datetime.fromtimestamp(t.time, tz=timezone.utc) - self.server_offset, t.bid, t.ask)
 
     def m1_history(self, bars: int) -> pd.DataFrame:
-        rates = self.mt5.copy_rates_from_pos(self.symbol, self.mt5.TIMEFRAME_M1, 1, bars)  # skip forming bar
-        return self._frame(rates)
+        want = max(200, min(int(bars or 8000), 20000))
+        for n in (want, 5000, 1500, 500):
+            rates = self.mt5.copy_rates_from_pos(self.symbol, self.mt5.TIMEFRAME_M1, 1, n)
+            if rates is not None and len(rates) > 0:
+                return self._frame(rates)
+        return self._frame(None)
 
     def m1_range(self, start: datetime, end: datetime) -> pd.DataFrame:
         rates = self.mt5.copy_rates_range(self.symbol, self.mt5.TIMEFRAME_M1, start + self.server_offset, end + self.server_offset)
