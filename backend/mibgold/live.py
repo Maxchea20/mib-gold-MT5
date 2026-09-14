@@ -39,12 +39,11 @@ class LiveEngine:
         max_risk_usd = float(os.environ.get("MAX_RISK_USD", "100.0"))
         allocation = ClampedAllocation(min_usd=min_risk_usd, max_usd=max_risk_usd)
         self.risk = RiskManager(self.spec, budget_pct=budget, max_layers=max_layers, allocation=allocation)
-        # Hard TP book: do not let trail steal the $5 target.
         self.book = PositionBook(self.spec, self.risk, TrailingTP(TrailingConfig(activate_r=999)), float(acc["balance"]),
                                  mode="live" if adapter.name == "mt5" else "paper")
         self.fixed_lots = float(os.environ.get("FIXED_LOTS", "0.02"))
-        self.sl_dollars = float(os.environ.get("SL_DOLLARS", "2"))
-        self.tp_dollars = float(os.environ.get("TP_DOLLARS", "5"))
+        self.sl_dollars = float(os.environ.get("SL_DOLLARS", "1.5"))
+        self.tp_dollars = float(os.environ.get("TP_DOLLARS", "2.5"))
         self.brain = TradeBrain(dead_min=float(os.environ.get("DEAD_FILL_MIN", "20")),
                                 dead_r=float(os.environ.get("DEAD_FILL_R", "0.15")))
         session_thr_env = os.environ.get("SESSION_THRESHOLDS")
