@@ -34,46 +34,28 @@ function fileStem(result, form) {
 
 function buildPayload(result, trades, form, bySide, bySess) {
   return {
-    file: fileStem(result, form),
-    id: result?.id,
-    range: result?.range,
-    config: result?.config || form,
-    form,
-    stats: result?.stats,
-    final_balance: result?.final_balance,
-    by_side: bySide,
-    by_session: bySess,
+    file: fileStem(result, form), id: result?.id, range: result?.range,
+    config: result?.config || form, form, stats: result?.stats, final_balance: result?.final_balance,
+    by_side: bySide, by_session: bySess,
     trades: trades.map((t) => ({
-      id: t.id,
-      time: t.exit_time || t.timestamp || t.time,
-      side: t.direction || t.side,
-      layer: t.layer_number ?? t.layer,
-      session: t.session,
-      entry: t.entry ?? t.entry_price,
-      exit: t.exit_price ?? t.exit,
-      exit_reason: t.exit_reason || t.exit_type,
-      r: t.r_multiple ?? t.r,
-      pnl: t.pnl ?? t.pnl_usd,
+      id: t.id, time: t.exit_time || t.timestamp || t.time, side: t.direction || t.side,
+      layer: t.layer_number ?? t.layer, session: t.session, entry: t.entry ?? t.entry_price,
+      exit: t.exit_price ?? t.exit, exit_reason: t.exit_reason || t.exit_type, r: t.r_multiple ?? t.r, pnl: t.pnl ?? t.pnl_usd,
     })),
   };
 }
 
 function toTxt(p) {
   const s = p.stats || {};
-  const lines = [
-    `FILE ${p.file}`,
-    `ID ${p.id || "—"}`,
+  return [
+    `FILE ${p.file}`, `ID ${p.id || "—"}`,
     `RANGE ${p.range ? `${p.range.start} -> ${p.range.end} M5 ${p.range.m5_bars}` : "—"}`,
     `CONFIG capital=${p.form?.start_balance} lot=${p.form?.fixed_lots} SL=${p.form?.sl_dollars} TP=${p.form?.tp_dollars} layers=${p.form?.max_layers} days=${p.form?.days}`,
     `STATS trades=${s.trades} wr=${s.win_rate} pf=${s.profit_factor} avgR=${s.avg_r} net=${s.net_pnl_text || s.net_pnl} ret=${s.return_pct} final=${p.final_balance}`,
-    `EXITS ${JSON.stringify(s.by_exit || {})}`,
-    `SIDE ${JSON.stringify(p.by_side)}`,
-    `SESSION ${JSON.stringify(p.by_session)}`,
-    "",
+    `EXITS ${JSON.stringify(s.by_exit || {})}`, `SIDE ${JSON.stringify(p.by_side)}`, `SESSION ${JSON.stringify(p.by_session)}`, "",
     "time\tside\tL\tsession\tin\tout\texit\tR\tpnl",
     ...p.trades.map((t) => [shortTime(t.time), String(t.side || "").toUpperCase(), `L${t.layer ?? ""}`, t.session || "", t.entry, t.exit, t.exit_reason || "", t.r, t.pnl].join("\t")),
-  ];
-  return lines.join("\n");
+  ].join("\n");
 }
 
 export default function BacktestLab({ feed }) {
@@ -99,8 +81,7 @@ export default function BacktestLab({ feed }) {
         return;
       }
       if (r.stats || r.status === "done") {
-        setResult(r);
-        setProgress(1);
+        setResult(r); setProgress(1);
         try { setTrades(await api.backtestTrades(id)); } catch (_) { setTrades([]); }
       }
     } catch (e) {
@@ -119,7 +100,7 @@ export default function BacktestLab({ feed }) {
   useEffect(() => {
     if (!runId || result || err) return;
     finish(runId);
-    const t = setInterval(() => finish(runId), 1500);
+    const t = setInterval(() => finish(runId), 800);
     return () => clearInterval(t);
   }, [runId, result, err]); // eslint-disable-line
 
@@ -132,21 +113,17 @@ export default function BacktestLab({ feed }) {
 
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.type === "checkbox" ? e.target.checked : Number(e.target.value) }));
   const running = runId && !result && !err;
+  const pctRun = Math.max(0, Math.min(100, progress * 100));
   const s = result?.stats || {};
   const exits = s.by_exit || {};
   const sln = exits.SL || 0;
   const trail = (exits.TRAIL_TP || 0) + (exits.TP || 0);
-
   const bySess = {}, bySide = {};
   trades.forEach((t) => {
-    const sess = t.session || "?"; const side = t.direction || "?";
-    const pnl = Number(t.pnl ?? 0);
-    bySess[sess] = bySess[sess] || { n: 0, pnl: 0, w: 0 };
-    bySess[sess].n += 1; bySess[sess].pnl += pnl; if (pnl > 0) bySess[sess].w += 1;
-    bySide[side] = bySide[side] || { n: 0, pnl: 0, w: 0 };
-    bySide[side].n += 1; bySide[side].pnl += pnl; if (pnl > 0) bySide[side].w += 1;
+    const sess = t.session || "?"; const side = t.direction || "?"; const pnl = Number(t.pnl ?? 0);
+    bySess[sess] = bySess[sess] || { n: 0, pnl: 0, w: 0 }; bySess[sess].n += 1; bySess[sess].pnl += pnl; if (pnl > 0) bySess[sess].w += 1;
+    bySide[side] = bySide[side] || { n: 0, pnl: 0, w: 0 }; bySide[side].n += 1; bySide[side].pnl += pnl; if (pnl > 0) bySide[side].w += 1;
   });
-
   const payload = result ? buildPayload(result, trades, form, bySide, bySess) : null;
   const stem = fileStem(result, form);
 
@@ -162,22 +139,25 @@ export default function BacktestLab({ feed }) {
           <Field label="days"><input className="input" type="number" value={form.days} onChange={set("days")} /></Field>
           <Field label="layers"><input className="input" type="number" value={form.max_layers} onChange={set("max_layers")} /></Field>
         </div>
-        <div className="px-3 pb-3 text-[10px] text-mute">0.01 lot × SL $3 = $3 risk. TP $3 = 1R scalp.</div>
         <div className="px-3 pb-3 flex flex-col gap-2">
-          <button className="btn active w-full" onClick={run} disabled={!!running}>{running ? `running ${(progress * 100).toFixed(0)}%` : "run backtest"}</button>
+          <button className={`btn active w-full ${running ? "breathe" : ""}`} onClick={run} disabled={!!running}>
+            {running ? `running ${pctRun.toFixed(0)}%` : "run backtest"}
+          </button>
+          {running && (
+            <div className="conf-track h-2">
+              <div className="conf-fill bg-gold breathe" style={{ width: `${Math.max(3, pctRun)}%` }} />
+            </div>
+          )}
           <button className="btn w-full" disabled={!payload} onClick={() => downloadBlob(`${stem}.json`, JSON.stringify(payload, null, 2), "application/json")}>download JSON</button>
           <button className="btn w-full" disabled={!payload} onClick={() => downloadBlob(`${stem}.txt`, toTxt(payload), "text/plain")}>download TXT</button>
           {runId && <div className="text-[9px] mono text-mute break-all">{runId}</div>}
-          {payload && <div className="text-[9px] mono text-mute break-all">{stem}</div>}
           {err && <div className="text-bear text-[10px] mono">{err}</div>}
         </div>
       </div>
-
       <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-y-auto">
         <div className="p-3 border-b border-[var(--hair)]">
           <div className="text-[10px] mono uppercase tracking-widest text-mute mb-2">
-            Report {result?.id || "—"} · {result?.range ? `${String(result.range.start).slice(0, 10)} → ${String(result.range.end).slice(0, 10)}` : (running ? "loading result…" : "no run")}
-            {result?.config ? ` · lot ${result.config.fixed_lots} SL ${result.config.sl_dollars} TP ${result.config.tp_dollars}` : ""}
+            Report {result?.id || "—"} · {result?.range ? `${String(result.range.start).slice(0, 10)} → ${String(result.range.end).slice(0, 10)}` : (running ? `walking ${pctRun.toFixed(0)}%` : "no run")}
           </div>
           <div className="grid grid-cols-8 gap-3 mono text-[12px]">
             <Stat k="trades" v={s.trades ?? "—"} />
@@ -188,10 +168,6 @@ export default function BacktestLab({ feed }) {
             <Stat k="return" v={s.return_pct == null ? "—" : pct(s.return_pct, 2)} good={s.return_pct >= 0} />
             <Stat k="final" v={result ? usd(result.final_balance) : "—"} gold />
             <Stat k="SL / TP" v={s.trades ? `${((sln / s.trades) * 100).toFixed(0)}% / ${((trail / s.trades) * 100).toFixed(0)}%` : "—"} />
-          </div>
-          <div className="mt-2 flex flex-wrap gap-4 text-[10px] mono text-dim">
-            {Object.entries(bySide).map(([k, v]) => <span key={k}>{k} {v.n}t WR {(v.w / v.n * 100).toFixed(0)}% {usd(v.pnl, true)}</span>)}
-            {Object.entries(bySess).map(([k, v]) => <span key={k}>{k} {v.n}t WR {(v.w / v.n * 100).toFixed(0)}% {usd(v.pnl, true)}</span>)}
           </div>
         </div>
         <div className="h-[160px] shrink-0 border-b border-[var(--hair)]">
@@ -217,11 +193,7 @@ export default function BacktestLab({ feed }) {
                   <tr key={t.id || i} className="mono text-[10px]">
                     <td>{shortTime(t.exit_time || t.timestamp)}</td>
                     <td className={side === "long" ? "text-bull" : "text-bear"}>{String(side).toUpperCase()}</td>
-                    <td>L{t.layer_number}</td>
-                    <td>{t.session}</td>
-                    <td>{t.entry}</td>
-                    <td>{t.exit_price}</td>
-                    <td>{t.exit_reason}</td>
+                    <td>L{t.layer_number}</td><td>{t.session}</td><td>{t.entry}</td><td>{t.exit_price}</td><td>{t.exit_reason}</td>
                     <td className={r >= 0 ? "text-bull" : "text-bear"}>{rTxt(r)}</td>
                     <td className={pnl >= 0 ? "text-bull" : "text-bear"}>{usd(pnl, true)}</td>
                   </tr>
