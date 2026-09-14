@@ -18,7 +18,7 @@ export default function Terminal({ feed, config }) {
   };
   const closeLayer = async (id) => { try { await api.closeLayer(id); } catch (e) { console.error(e); } };
   const changeWeight = async (engine, value) => {
-    setLiveWeights((w) => ({ ...w, [engine]: value })); // optimistic
+    setLiveWeights((w) => ({ ...w, [engine]: value }));
     try { await api.setWeights({ [engine]: value }); } catch (e) { console.error(e); }
   };
   const resetWeights = async () => { try { setLiveWeights(await api.resetWeights()); } catch (e) { console.error(e); } };
@@ -27,7 +27,7 @@ export default function Terminal({ feed, config }) {
     <div className="flex-1 flex min-h-0" data-testid="terminal-screen">
       <div className="flex-1 flex flex-col min-w-0 border-r border-[var(--hair)]">
         <div className="flex-1 min-h-0"><PriceChart layers={layers} barUpdates={barUpdates} tick={tick} /></div>
-        <div className="h-52 shrink-0 border-t border-[var(--hair)]"><LayersPanel layers={layers} account={account} onClose={closeLayer} tick={tick} /></div>
+        <div className="h-52 shrink-0 border-t border-[var(--hair)]"><LayersPanel layers={layers} account={account} book={status?.book_rules} onClose={closeLayer} tick={tick} /></div>
       </div>
       <aside className="w-[400px] shrink-0 flex flex-col min-h-0">
         <div className="flex-1 min-h-0">
