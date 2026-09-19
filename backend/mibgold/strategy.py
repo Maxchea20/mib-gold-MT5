@@ -66,25 +66,7 @@ class TopDownStrategy:
                          and abs(m15.get("score", 0)) >= self.cfg.struct_oppose_score)
         m5 = tf.get(ENTRY_TF, {})
         entry_cons = m5.get("consensus", {})
-        gate_reason = None
-        fire = False
-        if utc.weekday() in self.cfg.blocked_weekdays:
-            gate_reason = "session cut: Friday"
-        elif utc.hour in self.cfg.blocked_hours_utc:
-            gate_reason = f"session cut: {utc.hour:02d}:00 UTC"
-        elif session in self.cfg.blocked_sessions:
-            gate_reason = f"session cut: {session}"
-        elif bias["direction"] == "neutral":
-            gate_reason = "H1 bias neutral - entries gated"
-        elif not struct_ok:
-            gate_reason = f"M15 setup opposes {bias['direction']} bias (score {m15.get('score', 0):+.2f})"
-        elif not entry_cons.get("passes"):
-            gate_reason = (f"M5 consensus {entry_cons.get('score', 0):+.2f} / {entry_cons.get('aligned', 0)} aligned "
-                           f"below {session} threshold ({entry_cons.get('threshold')}, {entry_cons.get('min_aligned')})")
-        elif entry_cons.get("direction") != bias["direction"]:
-            gate_reason = f"M5 signal {entry_cons.get('direction')} against {bias['direction']} bias"
-        else:
-            fire = True
+        fire, gate_reason = self._brain_decide(utc, session, bias, struct_ok, m15, entry_cons)
         if fire and advisory and advisory.get("bias") not in (None, "neutral", bias["direction"]):
             entry_cons = dict(entry_cons)
             entry_cons["advisory_conflict"] = True
@@ -95,6 +77,25 @@ class TopDownStrategy:
             "summary": summarize(entry_cons) if entry_cons else "No M5 data",
             "fire": fire, "gate_reason": gate_reason, "advisory": advisory,
         }
+
+    def _brain_decide(self, utc, session, bias, struct_ok, m15, entry_cons) -> tuple:
+        """Calendar + stack. Votes are input only — no score/aligned threshold."""
+        m5d = entry_cons.get("direction") or "neutral"
+        if utc.weekday() in self.cfg.blocked_weekdays:
+            return False, "brain: Friday cut"
+        if utc.hour in self.cfg.blocked_hours_utc:
+            return False, f"brain: {utc.hour:02d}:00 UTC cut"
+        if session in self.cfg.blocked_sessions:
+            return False, f"brain: {session} cut"
+        if bias["direction"] == "neutral":
+            return False, "brain: H1 no side"
+        if not struct_ok:
+            return False, f"brain: M15 against {bias['direction']} ({m15.get('score', 0):+.2f})"
+        if m5d == "neutral":
+            return False, "brain: M5 no side"
+        if m5d != bias["direction"]:
+            return False, f"brain: M5 {m5d} vs H1 {bias['direction']}"
+        return True, None
 
     def _bias_from_h1(self, h1: dict, d1: dict, h4: dict) -> dict:
         s = h1.get("score", 0.0)
