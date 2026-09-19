@@ -1,4 +1,4 @@
-"""Live paper/real execution loop. Polls the adapter at ~10Hz, pushes to WebSocket subscribers, acts on M5 closes."""
+"""Live loop. Tick poll + decide on every M1 close. Fast scalp in/out."""
 from __future__ import annotations
 import asyncio
 import logging
@@ -18,7 +18,6 @@ from .news import NewsGate, NewsInterpreter
 from .risk import RiskManager, ClampedAllocation
 from .strategy import TopDownStrategy, StrategyConfig
 from .trailing import TrailingTP, TrailingConfig
-from .journal import close_record
 from .bars_cache import load_m1, merge_live, upsert_m1
 
 log = logging.getLogger("mibgold.live")
@@ -44,8 +43,10 @@ class LiveEngine:
         self.fixed_lots = float(os.environ.get("FIXED_LOTS", "0.02"))
         self.sl_dollars = float(os.environ.get("SL_DOLLARS", "1.5"))
         self.tp_dollars = float(os.environ.get("TP_DOLLARS", "3"))
-        self.brain = TradeBrain(dead_min=float(os.environ.get("DEAD_FILL_MIN", "20")),
+        self.brain = TradeBrain(dead_min=float(os.environ.get("DEAD_FILL_MIN", "2")),
                                 dead_r=float(os.environ.get("DEAD_FILL_R", "0.15")))
+        self.cooldown_min = float(os.environ.get("COOLDOWN_MIN", "2"))
+        self.last_exit_at: Optional[datetime] = None
         session_thr_env = os.environ.get("SESSION_THRESHOLDS")
         session_min_env = os.environ.get("SESSION_MIN_ALIGNED_OVERRIDE")
         session_thresholds = json.loads(session_thr_env) if session_thr_env else None
@@ -114,7 +115,8 @@ class LiveEngine:
             "today_pnl": round(today, 2), "today_pnl_text": ("Floating +" if today >= 0 else "Floating -") + f"${abs(today):,.2f}",
             "news": self.gate_state, "advisory": self.interpreter.current(self.tick.time) if self.tick else None,
             "analysis": self.analysis, "m5_atr": round(self.m5_atr, 3), "last_m5": self.last_m5.isoformat() if self.last_m5 else None,
-            "book_rules": {"layers": self.risk.max_layers, "lot": self.fixed_lots, "sl": self.sl_dollars, "tp": self.tp_dollars},
+            "book_rules": {"layers": self.risk.max_layers, "lot": self.fixed_lots, "sl": self.sl_dollars, "tp": self.tp_dollars,
+                           "dead_min": self.brain.dead_min, "cooldown_min": self.cooldown_min},
             "theses": [t.to_dict() for t in self.brain.theses.values()],
         }
 
@@ -164,12 +166,10 @@ class LiveEngine:
         self.last_minute = minute
         self.gate_state = self.gate.check(now)
         await self.interpreter.poll(now)
-        if self.book.layers or first or minute.minute % 5 == 0:
-            self.rebuild_frames(minute)
+        self.rebuild_frames(minute)
         if self.book.layers and self.tick:
             await self._review_open(now)
-        if first or minute.minute % 5 == 0:
-            await self._on_m5_close(minute, now)
+        await self._decide(minute, now)
         await self.broadcast({"type": "bars", "bars": {tf: self.chart(tf, 2) for tf in TFS}, "news": self.gate_state})
 
     async def _review_open(self, now: datetime):
@@ -185,13 +185,29 @@ class LiveEngine:
                 await self._closed(rec)
             await self.broadcast({"type": "thesis", "review": rev})
 
-    async def _on_m5_close(self, minute: datetime, now: datetime):
+    def _cooling(self, now: datetime) -> Optional[str]:
+        if not self.last_exit_at:
+            return None
+        try:
+            age = (now.replace(tzinfo=None) - self.last_exit_at.replace(tzinfo=None)).total_seconds() / 60.0
+        except Exception:
+            return None
+        if age < self.cooldown_min:
+            return f"brain: cooldown {age:.1f}/{self.cooldown_min:.0f}m"
+        return None
+
+    async def _decide(self, minute: datetime, now: datetime):
         self.last_m5 = minute
         advisory = self.interpreter.current(now)
         self.analysis = self.strategy.analyze(self.frames, now, self.spec, advisory)
         blocked = self.analysis["gate_reason"]
+        cool = self._cooling(now)
         opened = None
-        if self.analysis["fire"] and self.gate_state["blocked"]:
+        if self.book.layers:
+            blocked = blocked or "brain: clip already open"
+        elif cool:
+            blocked = cool
+        elif self.analysis["fire"] and self.gate_state["blocked"]:
             blocked = f"News gate active: {self.gate_state['event']['title']}"
         elif self.analysis["fire"] and not self.auto_trade:
             blocked = "Auto-trade paused by operator"
@@ -225,6 +241,7 @@ class LiveEngine:
         await self.broadcast({"type": "analysis", "analysis": self.analysis, "layers": self.book.open_records(self.tick.mid if self.tick else 0)})
 
     async def _closed(self, rec: dict):
+        self.last_exit_at = self.tick.time if self.tick else datetime.utcnow()
         self.brain.close(rec.get("id"), self.tick.time if self.tick else datetime.utcnow(), rec.get("exit_reason", ""))
         self._log(f"CLOSE L{rec['layer_number']} {rec['direction']} {rec['exit_reason']} @ {rec['exit_price']} -> {rec['r_text']} / {rec['pnl_text']}")
         await self.persist(rec)
