@@ -6,10 +6,9 @@ SESSIONS = [
 ]
 SESSION_LABEL = {"asian": "Asian", "london": "London", "ny_overlap": "NY Overlap", "ny": "New York", "off": "Off-hours"}
 
-# Consensus score needed before an entry is allowed to fire, per session
-SESSION_THRESHOLD = {"asian": 0.34, "london": 0.26, "ny_overlap": 0.24, "ny": 0.28, "off": 0.42}
-# Minimum non-neutral aligned engines per session
-SESSION_MIN_ALIGNED = {"asian": 5, "london": 4, "ny_overlap": 4, "ny": 4, "off": 6}
+# Display-only. Fire no longer requires these (see Consensus.evaluate).
+SESSION_THRESHOLD = {"asian": 0.0, "london": 0.0, "ny_overlap": 0.0, "ny": 0.0, "off": 0.0}
+SESSION_MIN_ALIGNED = {"asian": 0, "london": 0, "ny_overlap": 0, "ny": 0, "off": 0}
 
 
 def session_for(ts: datetime) -> str:
