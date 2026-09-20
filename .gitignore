@@ -59,3 +59,4 @@ desktop/src-tauri/target/
 .cache/
 **/*.zip
 **/*.tar.gz
+desktop/src-tauri/target/ 
