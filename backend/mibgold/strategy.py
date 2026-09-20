@@ -22,11 +22,15 @@ class StrategyConfig:
     sl_atr_mult: float = 1.2
     scale_in_r: float = 0.5
     bias_min_score: float = 0.10
-    struct_oppose_score: float = 0.15
+    struct_oppose_score: float = 0.35
     lookback: int = 220
-    blocked_sessions: Tuple[str, ...] = ("london",)
-    blocked_weekdays: Tuple[int, ...] = (4,)   # Friday
-    blocked_hours_utc: Tuple[int, ...] = (19,)  # 19:00-19:59 UTC
+    fire_min_score: float = 0.08
+    fire_min_aligned: int = 3
+    h1_hard_oppose: float = 0.22
+    # Empty = trade every session. Set via env later if you want cuts back.
+    blocked_sessions: Tuple[str, ...] = ()
+    blocked_weekdays: Tuple[int, ...] = ()
+    blocked_hours_utc: Tuple[int, ...] = ()
 
 
 class TopDownStrategy:
@@ -62,39 +66,45 @@ class TopDownStrategy:
         reference = {"d1_direction": d1.get("direction", "neutral"), "d1_score": d1.get("score", 0.0),
                      "h4_direction": h4.get("direction", "neutral"), "h4_score": h4.get("score", 0.0)}
         m15 = tf.get(SETUP_TF, {}).get("consensus", {})
-        struct_ok = not (m15 and bias["direction"] != "neutral" and m15.get("direction") not in (bias["direction"], "neutral")
-                         and abs(m15.get("score", 0)) >= self.cfg.struct_oppose_score)
         m5 = tf.get(ENTRY_TF, {})
         entry_cons = m5.get("consensus", {})
-        fire, gate_reason = self._brain_decide(utc, session, bias, struct_ok, m15, entry_cons)
-        if fire and advisory and advisory.get("bias") not in (None, "neutral", bias["direction"]):
+        fire, gate_reason = self._brain_decide(utc, session, bias, m15, entry_cons)
+        if fire and advisory and advisory.get("bias") not in (None, "neutral", entry_cons.get("direction")):
             entry_cons = dict(entry_cons)
             entry_cons["advisory_conflict"] = True
         return {
             "time": now.isoformat(), "session": session, "bias": bias, "reference": reference,
-            "structure": m15, "struct_ok": struct_ok,
+            "structure": m15, "struct_ok": gate_reason is None,
             "timeframes": tf, "entry": entry_cons, "votes": m5.get("votes", {}),
             "summary": summarize(entry_cons) if entry_cons else "No M5 data",
             "fire": fire, "gate_reason": gate_reason, "advisory": advisory,
         }
 
-    def _brain_decide(self, utc, session, bias, struct_ok, m15, entry_cons) -> tuple:
-        """Calendar + stack. Votes are input only — no score/aligned threshold."""
+    def _brain_decide(self, utc, session, bias, m15, entry_cons) -> tuple:
+        """M5 score fire. Calendar cuts off. H1/M15 only veto a strong opposite."""
         m5d = entry_cons.get("direction") or "neutral"
+        score = float(entry_cons.get("score") or 0.0)
+        aligned = int(entry_cons.get("aligned") or 0)
         if utc.weekday() in self.cfg.blocked_weekdays:
-            return False, "brain: Friday cut"
+            return False, "brain: weekday cut"
         if utc.hour in self.cfg.blocked_hours_utc:
             return False, f"brain: {utc.hour:02d}:00 UTC cut"
         if session in self.cfg.blocked_sessions:
             return False, f"brain: {session} cut"
-        if bias["direction"] == "neutral":
-            return False, "brain: H1 no side"
-        if not struct_ok:
-            return False, f"brain: M15 against {bias['direction']} ({m15.get('score', 0):+.2f})"
         if m5d == "neutral":
             return False, "brain: M5 no side"
-        if m5d != bias["direction"]:
-            return False, f"brain: M5 {m5d} vs H1 {bias['direction']}"
+        if abs(score) < self.cfg.fire_min_score:
+            return False, f"brain: M5 score {score:+.2f} < {self.cfg.fire_min_score}"
+        if aligned < self.cfg.fire_min_aligned:
+            return False, f"brain: M5 aligned {aligned}/{entry_cons.get('total', 10)} need {self.cfg.fire_min_aligned}"
+        h1d = bias.get("direction") or "neutral"
+        h1s = abs(float(bias.get("h1_score") or 0.0))
+        if h1d not in ("neutral", m5d) and h1s >= self.cfg.h1_hard_oppose:
+            return False, f"brain: H1 hard oppose {h1d} {bias.get('h1_score'):+.2f}"
+        m15d = m15.get("direction") or "neutral"
+        m15s = abs(float(m15.get("score") or 0.0))
+        if m15d not in ("neutral", m5d) and m15s >= self.cfg.struct_oppose_score:
+            return False, f"brain: M15 hard oppose {m15d} ({m15.get('score', 0):+.2f})"
         return True, None
 
     def _bias_from_h1(self, h1: dict, d1: dict, h4: dict) -> dict:
@@ -108,7 +118,9 @@ class TopDownStrategy:
                       price_bid: float, price_ask: float) -> Optional[dict]:
         if not analysis["fire"]:
             return None
-        direction = analysis["bias"]["direction"]
+        direction = (analysis.get("entry") or {}).get("direction") or analysis["bias"]["direction"]
+        if direction in (None, "neutral"):
+            return None
         m5 = frames[ENTRY_TF]
         atr = safe_atr(m5.tail(60))
         group = book.group_for(direction)
