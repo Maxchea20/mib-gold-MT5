@@ -29,13 +29,13 @@ function fileStem(result, form) {
   const lot = result?.config?.fixed_lots ?? form.fixed_lots;
   const sl = result?.config?.sl_dollars ?? form.sl_dollars;
   const tp = result?.config?.tp_dollars ?? form.tp_dollars;
-  return `mibgold-${id}-cap${cap}-lot${lot}-sl${sl}-tp${tp}`;
+  return `mibgold-huntc-${id}-cap${cap}-lot${lot}-sl${sl}-tp${tp}`;
 }
 
 function buildPayload(result, trades, form, bySide, bySess) {
   return {
     file: fileStem(result, form), id: result?.id, range: result?.range,
-    config: result?.config || form, form, stats: result?.stats, final_balance: result?.final_balance,
+    book: "Hunt C-fast", config: result?.config || form, form, stats: result?.stats, final_balance: result?.final_balance,
     by_side: bySide, by_session: bySess,
     trades: trades.map((t) => ({
       id: t.id, time: t.exit_time || t.timestamp || t.time, side: t.direction || t.side,
@@ -48,7 +48,7 @@ function buildPayload(result, trades, form, bySide, bySess) {
 function toTxt(p) {
   const s = p.stats || {};
   return [
-    `FILE ${p.file}`, `ID ${p.id || "—"}`,
+    `FILE ${p.file}`, `BOOK Hunt C-fast`, `ID ${p.id || "—"}`,
     `RANGE ${p.range ? `${p.range.start} -> ${p.range.end} M5 ${p.range.m5_bars}` : "—"}`,
     `CONFIG capital=${p.form?.start_balance} lot=${p.form?.fixed_lots} SL=${p.form?.sl_dollars} TP=${p.form?.tp_dollars} layers=${p.form?.max_layers} days=${p.form?.days}`,
     `STATS trades=${s.trades} wr=${s.win_rate} pf=${s.profit_factor} avgR=${s.avg_r} net=${s.net_pnl_text || s.net_pnl} ret=${s.return_pct} final=${p.final_balance}`,
@@ -63,7 +63,6 @@ export default function BacktestLab({ feed }) {
     days: 90, start_balance: 100, max_layers: 1, budget_pct: 0.1, slippage_points: 5, use_news_gate: true,
     csv_path: DEFAULT_CSV, fixed_lots: 0.02, sl_dollars: 1.5, tp_dollars: 3,
     bias_min_score: 0.10, struct_oppose_score: 0.15, min_risk_usd: 1, max_risk_usd: 100,
-    weights: { trend: 1, sr: 1, breakout: 0.9, momentum: 0.8, volume: 0.6, fibonacci: 0.7, elliott: 0.35, fvg: 0.9, pattern: 0.8, structure: 1 },
   });
   const [runId, setRunId] = useState(null);
   const [progress, setProgress] = useState(0);
@@ -95,14 +94,14 @@ export default function BacktestLab({ feed }) {
     if (typeof b.progress === "number") setProgress(b.progress);
     if (b.error) setErr(b.error);
     if (b.done && (runId || b.id)) finish(runId || b.id);
-  }, [feed.backtest, runId]); // eslint-disable-line
+  }, [feed.backtest, runId]);
 
   useEffect(() => {
     if (!runId || result || err) return;
     finish(runId);
     const t = setInterval(() => finish(runId), 800);
     return () => clearInterval(t);
-  }, [runId, result, err]); // eslint-disable-line
+  }, [runId, result, err]);
 
   const run = async () => {
     setErr(null); setResult(null); setTrades([]); setProgress(0);
@@ -117,7 +116,8 @@ export default function BacktestLab({ feed }) {
   const s = result?.stats || {};
   const exits = s.by_exit || {};
   const sln = exits.SL || 0;
-  const trail = (exits.TRAIL_TP || 0) + (exits.TP || 0);
+  const trail = (exits.TRAIL_TP || 0) + (exits.TP || 0) + (exits.TARGET_REACHED || 0);
+  const brain = (exits.BRAIN_EXIT || 0) + (exits.THESIS_FAILURE || 0) + (exits.STRUCTURAL_INVALIDATION || 0);
   const bySess = {}, bySide = {};
   trades.forEach((t) => {
     const sess = t.session || "?"; const side = t.direction || "?"; const pnl = Number(t.pnl ?? 0);
@@ -130,7 +130,8 @@ export default function BacktestLab({ feed }) {
   return (
     <div className="flex-1 flex min-h-0">
       <div className="w-[260px] shrink-0 border-r border-[var(--hair)] overflow-y-auto">
-        <div className="panel-head">Keeper · $100 · 0.02 · SL1.5 TP3 · no Lon/Fri/19</div>
+        <div className="panel-head">Hunt C-fast · 15m arm · 4h weather</div>
+        <div className="px-3 pt-2 text-[10px] text-mute leading-snug">Same door as live: CHoCH/BOS 15m, slot-3 impulse or level tap, weather filter, lifecycle trail/exit.</div>
         <div className="p-3 grid grid-cols-2 gap-2">
           <Field label="capital $"><input className="input" type="number" value={form.start_balance} onChange={set("start_balance")} /></Field>
           <Field label="lot"><input className="input" type="number" step="0.01" value={form.fixed_lots} onChange={set("fixed_lots")} /></Field>
@@ -141,7 +142,7 @@ export default function BacktestLab({ feed }) {
         </div>
         <div className="px-3 pb-3 flex flex-col gap-2">
           <button className={`btn active w-full ${running ? "breathe" : ""}`} onClick={run} disabled={!!running}>
-            {running ? `running ${pctRun.toFixed(0)}%` : "run backtest"}
+            {running ? `running ${pctRun.toFixed(0)}%` : "run Hunt C-fast"}
           </button>
           {running && (
             <div className="conf-track h-2">
@@ -157,7 +158,7 @@ export default function BacktestLab({ feed }) {
       <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-y-auto">
         <div className="p-3 border-b border-[var(--hair)]">
           <div className="text-[10px] mono uppercase tracking-widest text-mute mb-2">
-            Report {result?.id || "—"} · {result?.range ? `${String(result.range.start).slice(0, 10)} → ${String(result.range.end).slice(0, 10)}` : (running ? `walking ${pctRun.toFixed(0)}%` : "no run")}
+            Hunt C-fast {result?.id || "—"} · {result?.range ? `${String(result.range.start).slice(0, 10)} → ${String(result.range.end).slice(0, 10)}` : (running ? `walking ${pctRun.toFixed(0)}%` : "no run")}
           </div>
           <div className="grid grid-cols-8 gap-3 mono text-[12px]">
             <Stat k="trades" v={s.trades ?? "—"} />
@@ -167,7 +168,7 @@ export default function BacktestLab({ feed }) {
             <Stat k="net" v={s.net_pnl_text || usd(s.net_pnl)} good={s.net_pnl >= 0} />
             <Stat k="return" v={s.return_pct == null ? "—" : pct(s.return_pct, 2)} good={s.return_pct >= 0} />
             <Stat k="final" v={result ? usd(result.final_balance) : "—"} gold />
-            <Stat k="SL / TP" v={s.trades ? `${((sln / s.trades) * 100).toFixed(0)}% / ${((trail / s.trades) * 100).toFixed(0)}%` : "—"} />
+            <Stat k="SL / TP / brain" v={s.trades ? `${sln}/${trail}/${brain}` : "—"} />
           </div>
         </div>
         <div className="h-[160px] shrink-0 border-b border-[var(--hair)]">
