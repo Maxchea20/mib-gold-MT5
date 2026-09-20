@@ -15,7 +15,7 @@ function Metric({ label, value, sub, cls = "", testId }) {
 export default function TopBar({ status, account, tick, connected, transport }) {
   const eq = account?.equity, today = account?.today_pnl ?? 0;
   const book = status?.book_rules || {};
-  const lot = book.lot ?? 0.02;
+  const lot = Number(book.lot ?? 0.02);
   const sl = book.sl ?? 1.5;
   const tp = book.tp ?? 3;
   const layers = book.layers ?? account?.max_layers ?? 1;
@@ -33,11 +33,11 @@ export default function TopBar({ status, account, tick, connected, transport }) 
       <Metric label="Today P&L" value={usd(today, true)} sub={`floating ${usd(account?.floating_pnl ?? 0, true)}`} cls={today >= 0 ? "text-bull" : "text-bear"} testId="metric-today-pnl" />
       <div className="flex flex-col justify-center px-4 border-r border-[var(--hair)] min-w-[190px]" data-testid="metric-risk-gauge">
         <div className="flex justify-between text-[9px] uppercase tracking-[.14em] text-mute mono"><span>Keeper book</span><span>L{layers}</span></div>
-        <span className="mono text-[15px] font-semibold leading-tight">0.0{String(lot).replace("0.","")} · {sl}/{tp}</span>
-        <span className="text-[10px] text-dim mono">clip {usd(clip)} · no trail · news ±30m</span>
+        <span className="mono text-[15px] font-semibold leading-tight">{lot} lot - SL {sl} / TP {tp}</span>
+        <span className="text-[10px] text-dim mono">clip {usd(clip)} - no trail - news +/-30m</span>
       </div>
-      <Metric label="XAUUSD" value={tick ? tick.bid.toFixed(2) : "—"} sub={tick ? `ask ${tick.ask.toFixed(2)} · spr ${(tick.ask - tick.bid).toFixed(2)}` : ""} testId="metric-price" />
-      <Metric label="Session" value={SESSION_LABEL[session] || "—"} sub={tick ? new Date(tick.time).toISOString().slice(0, 16).replace("T", " ") + "Z" : ""} cls="text-cyan" testId="metric-session" />
+      <Metric label="XAUUSD" value={tick ? tick.bid.toFixed(2) : "-"} sub={tick ? `ask ${tick.ask.toFixed(2)} - spr ${(tick.ask - tick.bid).toFixed(2)}` : ""} testId="metric-price" />
+      <Metric label="Session" value={SESSION_LABEL[session] || "-"} sub={tick ? new Date(tick.time).toISOString().slice(0, 16).replace("T", " ") + "Z" : ""} cls="text-cyan" testId="metric-session" />
       <div className="flex-1" />
       <nav className="flex items-stretch">
         {tabs.map(([k, to, label]) => (
