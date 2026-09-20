@@ -7,55 +7,8 @@ const Field = ({ label, children }) => (<label className="flex flex-col gap-0.5"
 const DEFAULT_CSV = "data/GOLD#_M1_202606031118_202609141118.csv";
 
 function shortTime(t) {
-  if (!t) return "—";
+  if (!t) return "\u2014";
   return String(t).replace("T", " ").slice(5, 16);
-}
-
-function downloadBlob(filename, text, mime) {
-  const blob = new Blob([text], { type: mime });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-}
-
-function fileStem(result, form) {
-  const id = result?.id || "NORUN";
-  const cap = result?.config?.start_balance ?? form.start_balance;
-  const lot = result?.config?.fixed_lots ?? form.fixed_lots;
-  const sl = result?.config?.sl_dollars ?? form.sl_dollars;
-  const tp = result?.config?.tp_dollars ?? form.tp_dollars;
-  return `mibgold-huntc-${id}-cap${cap}-lot${lot}-sl${sl}-tp${tp}`;
-}
-
-function buildPayload(result, trades, form, bySide, bySess) {
-  return {
-    file: fileStem(result, form), id: result?.id, range: result?.range,
-    book: "Hunt C-fast", config: result?.config || form, form, stats: result?.stats, final_balance: result?.final_balance,
-    by_side: bySide, by_session: bySess,
-    trades: trades.map((t) => ({
-      id: t.id, time: t.exit_time || t.timestamp || t.time, side: t.direction || t.side,
-      layer: t.layer_number ?? t.layer, session: t.session, entry: t.entry ?? t.entry_price,
-      exit: t.exit_price ?? t.exit, exit_reason: t.exit_reason || t.exit_type, r: t.r_multiple ?? t.r, pnl: t.pnl ?? t.pnl_usd,
-    })),
-  };
-}
-
-function toTxt(p) {
-  const s = p.stats || {};
-  return [
-    `FILE ${p.file}`, `BOOK Hunt C-fast`, `ID ${p.id || "—"}`,
-    `RANGE ${p.range ? `${p.range.start} -> ${p.range.end} M5 ${p.range.m5_bars}` : "—"}`,
-    `CONFIG capital=${p.form?.start_balance} lot=${p.form?.fixed_lots} SL=${p.form?.sl_dollars} TP=${p.form?.tp_dollars} layers=${p.form?.max_layers} days=${p.form?.days}`,
-    `STATS trades=${s.trades} wr=${s.win_rate} pf=${s.profit_factor} avgR=${s.avg_r} net=${s.net_pnl_text || s.net_pnl} ret=${s.return_pct} final=${p.final_balance}`,
-    `EXITS ${JSON.stringify(s.by_exit || {})}`, `SIDE ${JSON.stringify(p.by_side)}`, `SESSION ${JSON.stringify(p.by_session)}`, "",
-    "time\tside\tL\tsession\tin\tout\texit\tR\tpnl",
-    ...p.trades.map((t) => [shortTime(t.time), String(t.side || "").toUpperCase(), `L${t.layer ?? ""}`, t.session || "", t.entry, t.exit, t.exit_reason || "", t.r, t.pnl].join("\t")),
-  ].join("\n");
 }
 
 export default function BacktestLab({ feed }) {
@@ -69,6 +22,7 @@ export default function BacktestLab({ feed }) {
   const [result, setResult] = useState(null);
   const [trades, setTrades] = useState([]);
   const [err, setErr] = useState(null);
+  const [savedPath, setSavedPath] = useState(null);
 
   const finish = async (id) => {
     try {
@@ -81,7 +35,14 @@ export default function BacktestLab({ feed }) {
       }
       if (r.stats || r.status === "done") {
         setResult(r); setProgress(1);
-        try { setTrades(await api.backtestTrades(id)); } catch (_) { setTrades([]); }
+        if (Array.isArray(r.trades) && r.trades.length) setTrades(r.trades);
+        else {
+          try { setTrades(await api.backtestTrades(id)); }
+          catch (e) {
+            setErr((e?.response?.data?.detail || e.message || "trades fetch failed") + " \u2014 stats loaded, table empty");
+            setTrades([]);
+          }
+        }
       }
     } catch (e) {
       setErr(e?.response?.data?.detail || e.message);
@@ -104,10 +65,21 @@ export default function BacktestLab({ feed }) {
   }, [runId, result, err]);
 
   const run = async () => {
-    setErr(null); setResult(null); setTrades([]); setProgress(0);
+    setErr(null); setResult(null); setTrades([]); setProgress(0); setSavedPath(null);
     const body = { ...form };
     if (!body.csv_path) delete body.csv_path;
     try { const r = await api.runBacktest(body); setRunId(r.id); } catch (e) { setErr(e?.response?.data?.detail || e.message); }
+  };
+
+  const exportReport = async (kind) => {
+    if (!runId) { setErr("Run a backtest first."); return; }
+    try {
+      const r = await api.exportBacktest(runId, kind);
+      setErr(null);
+      setSavedPath(r.path);
+    } catch (e) {
+      setErr(e?.response?.data?.detail || e.message || "export failed");
+    }
   };
 
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.type === "checkbox" ? e.target.checked : Number(e.target.value) }));
@@ -116,22 +88,12 @@ export default function BacktestLab({ feed }) {
   const s = result?.stats || {};
   const exits = s.by_exit || {};
   const sln = exits.SL || 0;
-  const trail = (exits.TRAIL_TP || 0) + (exits.TP || 0) + (exits.TARGET_REACHED || 0);
-  const brain = (exits.BRAIN_EXIT || 0) + (exits.THESIS_FAILURE || 0) + (exits.STRUCTURAL_INVALIDATION || 0);
-  const bySess = {}, bySide = {};
-  trades.forEach((t) => {
-    const sess = t.session || "?"; const side = t.direction || "?"; const pnl = Number(t.pnl ?? 0);
-    bySess[sess] = bySess[sess] || { n: 0, pnl: 0, w: 0 }; bySess[sess].n += 1; bySess[sess].pnl += pnl; if (pnl > 0) bySess[sess].w += 1;
-    bySide[side] = bySide[side] || { n: 0, pnl: 0, w: 0 }; bySide[side].n += 1; bySide[side].pnl += pnl; if (pnl > 0) bySide[side].w += 1;
-  });
-  const payload = result ? buildPayload(result, trades, form, bySide, bySess) : null;
-  const stem = fileStem(result, form);
+  const trail = (exits.TRAIL_TP || 0) + (exits.TP || 0);
 
   return (
     <div className="flex-1 flex min-h-0">
       <div className="w-[260px] shrink-0 border-r border-[var(--hair)] overflow-y-auto">
-        <div className="panel-head">Hunt C-fast · 15m arm · 4h weather</div>
-        <div className="px-3 pt-2 text-[10px] text-mute leading-snug">Same door as live: CHoCH/BOS 15m, slot-3 impulse or level tap, weather filter, lifecycle trail/exit.</div>
+        <div className="panel-head">Hunt C-fast \u00b7 15m arm \u00b7 4h weather</div>
         <div className="p-3 grid grid-cols-2 gap-2">
           <Field label="capital $"><input className="input" type="number" value={form.start_balance} onChange={set("start_balance")} /></Field>
           <Field label="lot"><input className="input" type="number" step="0.01" value={form.fixed_lots} onChange={set("fixed_lots")} /></Field>
@@ -149,26 +111,27 @@ export default function BacktestLab({ feed }) {
               <div className="conf-fill bg-gold breathe" style={{ width: `${Math.max(3, pctRun)}%` }} />
             </div>
           )}
-          <button className="btn w-full" disabled={!payload} onClick={() => downloadBlob(`${stem}.json`, JSON.stringify(payload, null, 2), "application/json")}>download JSON</button>
-          <button className="btn w-full" disabled={!payload} onClick={() => downloadBlob(`${stem}.txt`, toTxt(payload), "text/plain")}>download TXT</button>
+          <button className="btn w-full" disabled={!runId} onClick={() => exportReport("json")}>download JSON</button>
+          <button className="btn w-full" disabled={!runId} onClick={() => exportReport("txt")}>download TXT</button>
           {runId && <div className="text-[9px] mono text-mute break-all">{runId}</div>}
+          {savedPath && <div className="text-bull text-[10px] mono break-all">saved {savedPath}</div>}
           {err && <div className="text-bear text-[10px] mono">{err}</div>}
         </div>
       </div>
       <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-y-auto">
         <div className="p-3 border-b border-[var(--hair)]">
           <div className="text-[10px] mono uppercase tracking-widest text-mute mb-2">
-            Hunt C-fast {result?.id || "—"} · {result?.range ? `${String(result.range.start).slice(0, 10)} → ${String(result.range.end).slice(0, 10)}` : (running ? `walking ${pctRun.toFixed(0)}%` : "no run")}
+            Hunt C-fast {result?.id || "\u2014"} \u00b7 {result?.range ? `${String(result.range.start).slice(0, 10)} \u2192 ${String(result.range.end).slice(0, 10)}` : (running ? `walking ${pctRun.toFixed(0)}%` : "no run")}
           </div>
           <div className="grid grid-cols-8 gap-3 mono text-[12px]">
-            <Stat k="trades" v={s.trades ?? "—"} />
-            <Stat k="win rate" v={s.win_rate == null ? "—" : pct(s.win_rate)} />
-            <Stat k="PF" v={s.profit_factor ?? "—"} />
-            <Stat k="avg R" v={s.avg_r == null ? "—" : rTxt(s.avg_r)} />
+            <Stat k="trades" v={s.trades ?? "\u2014"} />
+            <Stat k="win rate" v={s.win_rate == null ? "\u2014" : pct(s.win_rate)} />
+            <Stat k="PF" v={s.profit_factor ?? "\u2014"} />
+            <Stat k="avg R" v={s.avg_r == null ? "\u2014" : rTxt(s.avg_r)} />
             <Stat k="net" v={s.net_pnl_text || usd(s.net_pnl)} good={s.net_pnl >= 0} />
-            <Stat k="return" v={s.return_pct == null ? "—" : pct(s.return_pct, 2)} good={s.return_pct >= 0} />
-            <Stat k="final" v={result ? usd(result.final_balance) : "—"} gold />
-            <Stat k="SL / TP / brain" v={s.trades ? `${sln}/${trail}/${brain}` : "—"} />
+            <Stat k="return" v={s.return_pct == null ? "\u2014" : pct(s.return_pct, 2)} good={s.return_pct >= 0} />
+            <Stat k="final" v={result ? usd(result.final_balance) : "\u2014"} gold />
+            <Stat k="SL / TP" v={s.trades ? `${((sln / s.trades) * 100).toFixed(0)}% / ${((trail / s.trades) * 100).toFixed(0)}%` : "\u2014"} />
           </div>
         </div>
         <div className="h-[160px] shrink-0 border-b border-[var(--hair)]">
@@ -188,7 +151,7 @@ export default function BacktestLab({ feed }) {
           <table className="tbl">
             <thead><tr><th>time</th><th>side</th><th>L</th><th>session</th><th>in</th><th>out</th><th>exit</th><th>R</th><th>pnl</th></tr></thead>
             <tbody>
-              {trades.map((t, i) => {
+              {trades.slice(0, 2000).map((t, i) => {
                 const r = Number(t.r_multiple ?? 0); const pnl = Number(t.pnl ?? 0); const side = t.direction || "";
                 return (
                   <tr key={t.id || i} className="mono text-[10px]">
