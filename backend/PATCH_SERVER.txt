@@ -1,0 +1,39 @@
+Replace backtest_get in backend/server.py with this block (do not strip trades).
+
+from mibgold.backtest.export_report import write_report
+from mibgold.backtest.routes import slim_trades as _slim_trades
+
+@api.get("/backtest/{bt_id}")
+async def backtest_get(bt_id: str):
+    bt = runner.runs.get(bt_id)
+    if bt:
+        if bt.result:
+            slim = _slim_trades(bt.result.get("trades") or [])
+            payload = {k: v for k, v in bt.result.items() if k != "trades"}
+            payload.update({"status": bt.status, "progress": bt.progress, "bar_count": len(bt.bars), "trades": slim, "trade_count": len(slim)})
+            return payload
+        return {"id": bt.id, "status": bt.status, "progress": bt.progress, "error": bt.error, "bar_count": len(bt.bars)}
+    doc = store.get_backtest(bt_id)
+    if not doc:
+        raise HTTPException(404, "not found")
+    return doc
+
+@api.get("/backtest/{bt_id}/trades")
+async def backtest_trades(bt_id: str):
+    bt = runner.runs.get(bt_id)
+    if bt and bt.result:
+        return _slim_trades(bt.result.get("trades") or [])
+    return _slim_trades(store.list_trades(status=None, backtest_id=bt_id, limit=8000, order="timestamp", descending=False))
+
+@api.get("/backtest/{bt_id}/export")
+async def backtest_export(bt_id: str, fmt: str = "json"):
+    bt = runner.runs.get(bt_id)
+    if bt and bt.result:
+        doc, trades = bt.result, bt.result.get("trades") or []
+    else:
+        doc = store.get_backtest(bt_id)
+        trades = store.list_trades(status=None, backtest_id=bt_id, limit=5000, order="timestamp", descending=False)
+    if not doc:
+        raise HTTPException(404, "backtest not finished or not found")
+    path = write_report(bt_id, fmt, doc, trades)
+    return {"ok": True, "path": path, "fmt": fmt}
