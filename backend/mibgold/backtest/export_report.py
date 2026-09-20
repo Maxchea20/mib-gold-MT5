@@ -38,10 +38,11 @@ def write_report(bt_id: str, fmt: str, doc: Dict[str, Any], trades: List[dict]) 
         })
     payload = {
         "id": bt_id,
-        "book": ((doc or {}).get("config") or {}).get("book") or "Hunt C-fast",
+        "book": ((doc or {}).get("config") or {}).get("book") or "C-Fast V2.1",
         "range": (doc or {}).get("range"),
         "config": (doc or {}).get("config"),
         "stats": stats,
+        "cfast_v2": (doc or {}).get("cfast_v2"),
         "final_balance": (doc or {}).get("final_balance"),
         "trades": rows,
     }
@@ -51,11 +52,9 @@ def write_report(bt_id: str, fmt: str, doc: Dict[str, Any], trades: List[dict]) 
         return str(path)
     path = folder / f"{stem}.txt"
     lines = [
-        f"FILE {path.name}",
-        f"ID {bt_id}",
-        f"STATS trades={stats.get('trades')} wr={stats.get('win_rate')} pf={stats.get('profit_factor')} net={stats.get('net_pnl_text') or stats.get('net_pnl')} final={payload.get('final_balance')}",
-        "",
-        "time\tside\tL\tsession\tin\tout\texit\tR\tpnl",
+        f"FILE {path.name}", f"ID {bt_id}",
+        f"STATS trades={stats.get('trades')} wr={stats.get('win_rate')} pf={stats.get('profit_factor')} net={stats.get('net_pnl')}",
+        "", "time\tside\tL\tsession\tin\tout\texit\tR\tpnl",
     ]
     for t in rows:
         lines.append("\t".join("" if x is None else str(x) for x in [
