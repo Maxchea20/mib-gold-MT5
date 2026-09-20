@@ -89,11 +89,12 @@ export default function BacktestLab({ feed }) {
   const exits = s.by_exit || {};
   const sln = exits.SL || 0;
   const trail = (exits.TRAIL_TP || 0) + (exits.TP || 0);
+  const v2 = result?.cfast_v2 || {};
 
   return (
     <div className="flex-1 flex min-h-0">
       <div className="w-[260px] shrink-0 border-r border-[var(--hair)] overflow-y-auto">
-        <div className="panel-head">C-Fast V2 - 15m arm - 4h weather - RR 1:3</div>
+        <div className="panel-head">C-Fast V2.1 - setup reset - RR 1:3</div>
         <div className="p-3 grid grid-cols-2 gap-2">
           <Field label="capital $"><input className="input" type="number" value={form.start_balance} onChange={set("start_balance")} /></Field>
           <Field label="lot"><input className="input" type="number" step="0.01" value={form.fixed_lots} onChange={set("fixed_lots")} /></Field>
@@ -104,7 +105,7 @@ export default function BacktestLab({ feed }) {
         </div>
         <div className="px-3 pb-3 flex flex-col gap-2">
           <button className={`btn active w-full ${running ? "breathe" : ""}`} onClick={run} disabled={!!running}>
-            {running ? `running ${pctRun.toFixed(0)}%` : "run C-Fast V2"}
+            {running ? `running ${pctRun.toFixed(0)}%` : "run C-Fast V2.1"}
           </button>
           {running && (
             <div className="conf-track h-2">
@@ -116,12 +117,15 @@ export default function BacktestLab({ feed }) {
           {runId && <div className="text-[9px] mono text-mute break-all">{runId}</div>}
           {savedPath && <div className="text-bull text-[10px] mono break-all">saved {savedPath}</div>}
           {err && <div className="text-bear text-[10px] mono">{err}</div>}
+          {v2.old_setup_blocked != null && (
+            <div className="text-[9px] mono text-mute">blocked old {v2.old_setup_blocked} / new after SL {v2.new_same_dir_after_sl || 0}</div>
+          )}
         </div>
       </div>
       <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-y-auto">
         <div className="p-3 border-b border-[var(--hair)]">
           <div className="text-[10px] mono uppercase tracking-widest text-mute mb-2">
-            C-Fast V2 {result?.id || "-"} - {result?.range ? `${String(result.range.start).slice(0, 10)} to ${String(result.range.end).slice(0, 10)}` : (running ? `walking ${pctRun.toFixed(0)}%` : "no run")}
+            C-Fast V2.1 {result?.id || "-"} - {result?.range ? `${String(result.range.start).slice(0, 10)} to ${String(result.range.end).slice(0, 10)}` : (running ? `walking ${pctRun.toFixed(0)}%` : "no run")}
           </div>
           <div className="grid grid-cols-8 gap-3 mono text-[12px]">
             <Stat k="trades" v={s.trades ?? "-"} />
