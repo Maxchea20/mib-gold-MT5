@@ -7,14 +7,14 @@ const Field = ({ label, children }) => (<label className="flex flex-col gap-0.5"
 const DEFAULT_CSV = "data/GOLD#_M1_202606031118_202609141118.csv";
 
 function shortTime(t) {
-  if (!t) return "\u2014";
+  if (!t) return "-";
   return String(t).replace("T", " ").slice(5, 16);
 }
 
 export default function BacktestLab({ feed }) {
   const [form, setForm] = useState({
     days: 90, start_balance: 100, max_layers: 1, budget_pct: 0.1, slippage_points: 5, use_news_gate: true,
-    csv_path: DEFAULT_CSV, fixed_lots: 0.02, sl_dollars: 1.5, tp_dollars: 3,
+    csv_path: DEFAULT_CSV, fixed_lots: 0.02, sl_dollars: 1.5, tp_dollars: 4.5,
     bias_min_score: 0.10, struct_oppose_score: 0.15, min_risk_usd: 1, max_risk_usd: 100,
   });
   const [runId, setRunId] = useState(null);
@@ -39,7 +39,7 @@ export default function BacktestLab({ feed }) {
         else {
           try { setTrades(await api.backtestTrades(id)); }
           catch (e) {
-            setErr((e?.response?.data?.detail || e.message || "trades fetch failed") + " \u2014 stats loaded, table empty");
+            setErr((e?.response?.data?.detail || e.message || "trades fetch failed") + " - stats loaded, table empty");
             setTrades([]);
           }
         }
@@ -66,7 +66,7 @@ export default function BacktestLab({ feed }) {
 
   const run = async () => {
     setErr(null); setResult(null); setTrades([]); setProgress(0); setSavedPath(null);
-    const body = { ...form };
+    const body = { ...form, tp_dollars: Number(form.sl_dollars) * 3 };
     if (!body.csv_path) delete body.csv_path;
     try { const r = await api.runBacktest(body); setRunId(r.id); } catch (e) { setErr(e?.response?.data?.detail || e.message); }
   };
@@ -93,18 +93,18 @@ export default function BacktestLab({ feed }) {
   return (
     <div className="flex-1 flex min-h-0">
       <div className="w-[260px] shrink-0 border-r border-[var(--hair)] overflow-y-auto">
-        <div className="panel-head">Hunt C-fast \u00b7 15m arm \u00b7 4h weather</div>
+        <div className="panel-head">C-Fast V2 - 15m arm - 4h weather - RR 1:3</div>
         <div className="p-3 grid grid-cols-2 gap-2">
           <Field label="capital $"><input className="input" type="number" value={form.start_balance} onChange={set("start_balance")} /></Field>
           <Field label="lot"><input className="input" type="number" step="0.01" value={form.fixed_lots} onChange={set("fixed_lots")} /></Field>
           <Field label="SL $"><input className="input" type="number" step="0.1" value={form.sl_dollars} onChange={set("sl_dollars")} /></Field>
-          <Field label="TP $"><input className="input" type="number" step="0.1" value={form.tp_dollars} onChange={set("tp_dollars")} /></Field>
+          <Field label="TP $ (=3x SL)"><input className="input" type="number" step="0.1" value={(Number(form.sl_dollars) * 3).toFixed(2)} readOnly /></Field>
           <Field label="days"><input className="input" type="number" value={form.days} onChange={set("days")} /></Field>
           <Field label="layers"><input className="input" type="number" value={form.max_layers} onChange={set("max_layers")} /></Field>
         </div>
         <div className="px-3 pb-3 flex flex-col gap-2">
           <button className={`btn active w-full ${running ? "breathe" : ""}`} onClick={run} disabled={!!running}>
-            {running ? `running ${pctRun.toFixed(0)}%` : "run Hunt C-fast"}
+            {running ? `running ${pctRun.toFixed(0)}%` : "run C-Fast V2"}
           </button>
           {running && (
             <div className="conf-track h-2">
@@ -121,17 +121,17 @@ export default function BacktestLab({ feed }) {
       <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-y-auto">
         <div className="p-3 border-b border-[var(--hair)]">
           <div className="text-[10px] mono uppercase tracking-widest text-mute mb-2">
-            Hunt C-fast {result?.id || "\u2014"} \u00b7 {result?.range ? `${String(result.range.start).slice(0, 10)} \u2192 ${String(result.range.end).slice(0, 10)}` : (running ? `walking ${pctRun.toFixed(0)}%` : "no run")}
+            C-Fast V2 {result?.id || "-"} - {result?.range ? `${String(result.range.start).slice(0, 10)} to ${String(result.range.end).slice(0, 10)}` : (running ? `walking ${pctRun.toFixed(0)}%` : "no run")}
           </div>
           <div className="grid grid-cols-8 gap-3 mono text-[12px]">
-            <Stat k="trades" v={s.trades ?? "\u2014"} />
-            <Stat k="win rate" v={s.win_rate == null ? "\u2014" : pct(s.win_rate)} />
-            <Stat k="PF" v={s.profit_factor ?? "\u2014"} />
-            <Stat k="avg R" v={s.avg_r == null ? "\u2014" : rTxt(s.avg_r)} />
+            <Stat k="trades" v={s.trades ?? "-"} />
+            <Stat k="win rate" v={s.win_rate == null ? "-" : pct(s.win_rate)} />
+            <Stat k="PF" v={s.profit_factor ?? "-"} />
+            <Stat k="avg R" v={s.avg_r == null ? "-" : rTxt(s.avg_r)} />
             <Stat k="net" v={s.net_pnl_text || usd(s.net_pnl)} good={s.net_pnl >= 0} />
-            <Stat k="return" v={s.return_pct == null ? "\u2014" : pct(s.return_pct, 2)} good={s.return_pct >= 0} />
-            <Stat k="final" v={result ? usd(result.final_balance) : "\u2014"} gold />
-            <Stat k="SL / TP" v={s.trades ? `${((sln / s.trades) * 100).toFixed(0)}% / ${((trail / s.trades) * 100).toFixed(0)}%` : "\u2014"} />
+            <Stat k="return" v={s.return_pct == null ? "-" : pct(s.return_pct, 2)} good={s.return_pct >= 0} />
+            <Stat k="final" v={result ? usd(result.final_balance) : "-"} gold />
+            <Stat k="SL / TP" v={s.trades ? `${((sln / s.trades) * 100).toFixed(0)}% / ${((trail / s.trades) * 100).toFixed(0)}%` : "-"} />
           </div>
         </div>
         <div className="h-[160px] shrink-0 border-b border-[var(--hair)]">
