@@ -1,13 +1,10 @@
-# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
-
-# IDE and editors
+# IDE
 .idea/
 .vscode/
 
-# Dependencies
+# JS
 node_modules/
-/node_modules
-/.pnp
+.pnp
 .pnp.js
 .yarn/install-state.gz
 .yarn/*
@@ -15,80 +12,50 @@ node_modules/
 !.yarn/plugins
 !.yarn/releases
 !.yarn/versions
-
-# Testing
 /coverage
-
-# Next.js
-/.next/
-/out/
-next-env.d.ts
-*.tsbuildinfo
-
-# Production builds
 /build
 dist/
-dist
+frontend/build/
 
-# Environment files (comprehensive coverage)
-
-*token.json*
-*credentials.json*
-
-# Logs and debug files
+# Logs
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
-dump.rdb
 
-# System files
+# System
 .DS_Store
 *.pem
 
 # Python
 __pycache__/
-*pyc*
+*.pyc
 venv/
 .venv/
 
-# Development tools
-chainlit.md
-.chainlit
-.ipynb_checkpoints/
-.ac
-
-# Deployment
-.vercel
-
-# Data and databases
-agenthub/agents/youtube/db
-
-# Archive files and large assets
-**/*.zip
-**/*.tar.gz
-**/*.tar
-**/*.tgz
-*.pack
-*.deb
-*.dylib
-
-# Build caches
-.cache/
-
-memory/test_credentials.md
-
-# Mobile development
-android-sdk/
+# Secrets
 .env
 .env.*
 *.env
 credentials.json
+*credentials.json*
+*token.json*
 *.key
 .credentials
 
-# Local app data
+# Local data
 backend/data/*.sqlite
 backend/data/*.sqlite-*
 *.sqlite
-frontend/build/
+
+# Rust / Tauri build output (never commit)
+**/target/
+desktop/src-tauri/target/
+*.pdb
+*.exe
+!desktop/src-tauri/icons/*
+
+# Caches
+.cache/
+**/*.zip
+**/*.tar.gz
