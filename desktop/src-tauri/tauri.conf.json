@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "mib-gold",
+  "productName": "MIB Gold",
   "version": "0.1.0",
   "identifier": "com.mibgold.terminal",
   "build": {
@@ -12,7 +12,8 @@
   "app": {
     "windows": [
       {
-        "title": "mib-gold · XAUUSD terminal",
+        "label": "main",
+        "title": "MIB Gold",
         "width": 1600,
         "height": 940,
         "minWidth": 1280,
@@ -24,10 +25,8 @@
     "security": { "csp": null }
   },
   "bundle": {
-    "active": true,
-    "targets": ["msi", "nsis"],
-    "externalBin": ["binaries/mibgold-backend"],
-    "icon": ["icons/icon.ico"]
+    "active": false,
+    "targets": ["nsis"]
   },
   "plugins": {
     "shell": { "open": false }

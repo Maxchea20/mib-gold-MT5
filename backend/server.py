@@ -11,6 +11,8 @@ import asyncio
 import json
 import logging
 import os
+from mibgold.backtest.export_report import write_report
+from mibgold.backtest.routes import slim_trades as _slim_trades
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -141,7 +143,7 @@ async def reset_weights():
 
 @api.get("/chart")
 async def chart(tf: str = "M5", n: int = 400):
-    if tf not in ("M1", "M5", "H1", "H4", "D1"):
+    if tf not in ("M1", "M5", "M15", "H1", "H4", "D1"):
         raise HTTPException(400, "bad timeframe")
     return {"tf": tf, "bars": live.chart(tf, n)}
 
@@ -322,38 +324,35 @@ async def backtest_get(bt_id: str):
     bt = runner.runs.get(bt_id)
     if bt:
         if bt.result:
-            return {k: v for k, v in bt.result.items() if k != "trades"} | {"status": bt.status, "progress": bt.progress, "bar_count": len(bt.bars)}
+            slim = _slim_trades(bt.result.get("trades") or [])
+            payload = {k: v for k, v in bt.result.items() if k != "trades"}
+            payload.update({"status": bt.status, "progress": bt.progress,
+                            "bar_count": len(bt.bars), "trades": slim, "trade_count": len(slim)})
+            return payload
         return {"id": bt.id, "status": bt.status, "progress": bt.progress, "error": bt.error, "bar_count": len(bt.bars)}
     doc = store.get_backtest(bt_id)
     if not doc:
         raise HTTPException(404, "not found")
     return doc
 
-
 @api.get("/backtest/{bt_id}/trades")
 async def backtest_trades(bt_id: str):
     bt = runner.runs.get(bt_id)
     if bt and bt.result:
-        return bt.result["trades"]
-    return store.list_trades(status=None, backtest_id=bt_id, limit=5000, order="timestamp", descending=False)
+        return _slim_trades(bt.result.get("trades") or [])
+    return _slim_trades(store.list_trades(status=None, backtest_id=bt_id, limit=8000, order="timestamp", descending=False))
 
-
-@api.get("/backtest/{bt_id}/bars")
-async def backtest_bars(bt_id: str, start: int = 0, count: int = 600):
+@api.get("/backtest/{bt_id}/export")
+async def backtest_export(bt_id: str, fmt: str = "json"):
     bt = runner.runs.get(bt_id)
-    if not bt:
-        raise HTTPException(404, "replay frames only kept in memory for recent runs")
-    return {"total": len(bt.bars), "start": start, "bars": bt.bars[start:start + count]}
-
-
-@api.post("/backtest/{bt_id}/stop")
-async def backtest_stop(bt_id: str):
-    bt = runner.runs.get(bt_id)
-    if not bt:
-        raise HTTPException(404, "not found")
-    bt.stop()
-    return {"status": "stopping"}
-
+    if bt and bt.result:
+        doc, trades = bt.result, bt.result.get("trades") or []
+    else:
+        doc = store.get_backtest(bt_id)
+        trades = store.list_trades(status=None, backtest_id=bt_id, limit=5000, order="timestamp", descending=False)
+    if not doc:
+        raise HTTPException(404, "backtest not finished or not found")
+    return {"ok": True, "path": write_report(bt_id, fmt, doc, trades), "fmt": fmt}
 
 @app.websocket("/api/ws")
 async def ws_endpoint(ws: WebSocket):

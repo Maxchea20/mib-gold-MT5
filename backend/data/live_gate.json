@@ -1,0 +1,1 @@
+{"session_thresholds": {"asian": 0.28, "london": 0.26, "ny_overlap": 0.24, "ny": 0.13, "off": 0.42}, "session_min_aligned": {"asian": 4, "london": 4, "ny_overlap": 5, "ny": 2, "off": 6}, "bias_min_score": 0.1, "struct_oppose_score": 0.1}
