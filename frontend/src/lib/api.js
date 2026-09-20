@@ -43,4 +43,5 @@ export const api = {
   backtest: (id) => longHttp.get(`/backtest/${id}`).then((r) => r.data),
   backtestTrades: (id) => longHttp.get(`/backtest/${id}/trades`).then((r) => r.data),
   backtestBars: (id, start, count) => http.get(`/backtest/${id}/bars`, { params: { start, count } }).then((r) => r.data),
+  exportBacktest: (id, fmt) => http.get(`/backtest/${id}/export`, { params: { fmt } }).then((r) => r.data),
 };
