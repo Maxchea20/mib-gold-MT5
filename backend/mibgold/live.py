@@ -1,10 +1,10 @@
-"""Live loop. Tick poll + decide on every M1 close. Fast scalp in/out."""
+"""Live loop. C-Fast V2.1 door on each new minute."""
 from __future__ import annotations
 import asyncio
 import logging
 import json
 import os
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Callable, Awaitable, Dict, Optional
 import pandas as pd
 from .adapters.base import DataAdapter, Tick
@@ -19,6 +19,9 @@ from .risk import RiskManager, ClampedAllocation
 from .strategy import TopDownStrategy, StrategyConfig
 from .trailing import TrailingTP, TrailingConfig
 from .bars_cache import load_m1, merge_live, upsert_m1
+from .hunt.hunt_c_fast import frames_to_candles
+from .hunt.cfast_v2 import CFastV2
+from .hunt.lifecycle import position_from_layer, reevaluate, EXIT, TRAIL
 
 log = logging.getLogger("mibgold.live")
 TFS = ("M5", "M15", "H1", "H4", "D1")
@@ -34,27 +37,23 @@ class LiveEngine:
         acc = adapter.account()
         max_layers = int(os.environ.get("MAX_LAYERS", "1"))
         budget = float(os.environ.get("RISK_BUDGET_PCT", "0.10"))
-        min_risk_usd = float(os.environ.get("MIN_RISK_USD", "10.0"))
-        max_risk_usd = float(os.environ.get("MAX_RISK_USD", "100.0"))
-        allocation = ClampedAllocation(min_usd=min_risk_usd, max_usd=max_risk_usd)
+        allocation = ClampedAllocation(
+            min_usd=float(os.environ.get("MIN_RISK_USD", "10.0")),
+            max_usd=float(os.environ.get("MAX_RISK_USD", "100.0")),
+        )
         self.risk = RiskManager(self.spec, budget_pct=budget, max_layers=max_layers, allocation=allocation)
         self.book = PositionBook(self.spec, self.risk, TrailingTP(TrailingConfig(activate_r=999)), float(acc["balance"]),
                                  mode="live" if adapter.name == "mt5" else "paper")
         self.fixed_lots = float(os.environ.get("FIXED_LOTS", "0.02"))
         self.sl_dollars = float(os.environ.get("SL_DOLLARS", "1.5"))
-        self.tp_dollars = float(os.environ.get("TP_DOLLARS", "3"))
+        self.tp_dollars = self.sl_dollars * 3.0
         self.brain = TradeBrain(dead_min=float(os.environ.get("DEAD_FILL_MIN", "2")),
                                 dead_r=float(os.environ.get("DEAD_FILL_R", "0.15")))
-        self.cooldown_min = float(os.environ.get("COOLDOWN_MIN", "2"))
+        self.cfast = CFastV2(log=lambda m: self._log(m))
+        self.cooldown_min = 0.0
         self.last_exit_at: Optional[datetime] = None
-        session_thr_env = os.environ.get("SESSION_THRESHOLDS")
-        session_min_env = os.environ.get("SESSION_MIN_ALIGNED_OVERRIDE")
-        session_thresholds = json.loads(session_thr_env) if session_thr_env else None
-        session_min_aligned = json.loads(session_min_env) if session_min_env else None
         cfg = StrategyConfig()
-        cfg.bias_min_score = float(os.environ.get("BIAS_MIN_SCORE", cfg.bias_min_score))
-        cfg.struct_oppose_score = float(os.environ.get("STRUCT_OPPOSE_SCORE", cfg.struct_oppose_score))
-        self.strategy = TopDownStrategy(EngineSuite(), Consensus(session_threshold=session_thresholds, session_min_aligned=session_min_aligned), cfg)
+        self.strategy = TopDownStrategy(EngineSuite(), Consensus(), cfg)
         self.auto_trade = os.environ.get("AUTO_TRADE", "true").lower() == "true"
         self.history_bars = int(os.environ.get("HISTORY_M1_BARS", "50000"))
         self.tick: Optional[Tick] = None
@@ -76,11 +75,6 @@ class LiveEngine:
         live_m1 = self.adapter.m1_history(self.history_bars)
         cached = load_m1(self._symbol(), self.history_bars)
         m1 = merge_live(cached, live_m1)
-        log.info("m1 history rows=%s live=%s cached=%s symbol=%s",
-                 0 if m1 is None else len(m1),
-                 0 if live_m1 is None else len(live_m1),
-                 0 if cached is None else len(cached),
-                 self._symbol())
         if m1 is None or m1.empty:
             self.frames = {}
             return
@@ -112,11 +106,11 @@ class LiveEngine:
             "connection": self.connection, "mode": self.book.mode, "auto_trade": self.auto_trade,
             "symbol": self.spec.to_dict(), "tick": self.tick.to_dict() if self.tick else None,
             "session": self.analysis.get("session"), "account": snap,
-            "today_pnl": round(today, 2), "today_pnl_text": ("Floating +" if today >= 0 else "Floating -") + f"${abs(today):,.2f}",
-            "news": self.gate_state, "advisory": self.interpreter.current(self.tick.time) if self.tick else None,
-            "analysis": self.analysis, "m5_atr": round(self.m5_atr, 3), "last_m5": self.last_m5.isoformat() if self.last_m5 else None,
-            "book_rules": {"layers": self.risk.max_layers, "lot": self.fixed_lots, "sl": self.sl_dollars, "tp": self.tp_dollars,
-                           "dead_min": self.brain.dead_min, "cooldown_min": self.cooldown_min},
+            "today_pnl": round(today, 2),
+            "today_pnl_text": ("Floating +" if today >= 0 else "Floating -") + f"${abs(today):,.2f}",
+            "news": self.gate_state, "analysis": self.analysis, "m5_atr": round(self.m5_atr, 3),
+            "last_m5": self.last_m5.isoformat() if self.last_m5 else None,
+            "book_rules": {"layers": self.risk.max_layers, "lot": self.fixed_lots, "sl": self.sl_dollars, "tp": self.tp_dollars},
             "theses": [t.to_dict() for t in self.brain.theses.values()],
         }
 
@@ -125,9 +119,8 @@ class LiveEngine:
         snap = self.book.snapshot(price)
         today = snap["balance"] - self.day_start_balance + snap["floating_pnl"]
         return {"type": "tick", "tick": self.tick.to_dict(), "equity": snap["equity"], "balance": snap["balance"],
-                "floating_pnl": snap["floating_pnl"], "risk_used_pct": snap["risk_used_pct"], "risk_used_usd": snap["risk_used_usd"],
-                "today_pnl": round(today, 2), "layers": snap["layers"], "news": self.gate_state,
-                "theses": [t.to_dict() for t in self.brain.theses.values()]}
+                "floating_pnl": snap["floating_pnl"], "today_pnl": round(today, 2), "layers": snap["layers"],
+                "news": self.gate_state, "theses": [t.to_dict() for t in self.brain.theses.values()]}
 
     async def run(self):
         self.started = True
@@ -152,98 +145,73 @@ class LiveEngine:
         minute = now.replace(second=0, microsecond=0)
         if self.last_minute is None or minute > self.last_minute:
             await self._on_minute(minute, now)
-        prev_sl = {l.id: l.sl for l in self.book.layers}
         for rec in self.book.on_bar(tick.ask, tick.bid, tick.mid, self.m5_atr, now):
             await self._closed(rec)
-        if self.adapter.name == "mt5":
-            for l in self.book.layers:
-                if l.ticket and prev_sl.get(l.id) != l.sl:
-                    self.adapter.modify_sl(l.ticket, round(l.sl, self.spec.digits))
         await self.broadcast(self._tick_payload())
 
     async def _on_minute(self, minute: datetime, now: datetime):
-        first = self.last_minute is None
         self.last_minute = minute
         self.gate_state = self.gate.check(now)
         await self.interpreter.poll(now)
         self.rebuild_frames(minute)
-        if self.book.layers and self.tick:
-            await self._review_open(now)
         await self._decide(minute, now)
         await self.broadcast({"type": "bars", "bars": {tf: self.chart(tf, 2) for tf in TFS}, "news": self.gate_state})
 
-    async def _review_open(self, now: datetime):
-        price = self.tick.mid
-        for layer in list(self.book.layers):
-            rev = self.brain.review(layer, price, now, self.spec.contract_size)
-            self._log(f"THESIS L{layer.layer_number} {rev['action']} {rev['age_min']}m r={rev['r']:+.2f}")
-            if rev["action"] == "time_stop":
-                px = self.tick.bid if layer.sign > 0 else self.tick.ask
-                if self.adapter.name == "mt5" and layer.ticket:
-                    self.adapter.close_position(layer.ticket, layer.lots, layer.direction)
-                rec = self.book.close_layer(layer, px, "TIME_STOP", now)
-                await self._closed(rec)
-            await self.broadcast({"type": "thesis", "review": rev})
-
-    def _cooling(self, now: datetime) -> Optional[str]:
-        if not self.last_exit_at:
-            return None
-        try:
-            age = (now.replace(tzinfo=None) - self.last_exit_at.replace(tzinfo=None)).total_seconds() / 60.0
-        except Exception:
-            return None
-        if age < self.cooldown_min:
-            return f"brain: cooldown {age:.1f}/{self.cooldown_min:.0f}m"
-        return None
-
     async def _decide(self, minute: datetime, now: datetime):
         self.last_m5 = minute
-        advisory = self.interpreter.current(now)
-        self.analysis = self.strategy.analyze(self.frames, now, self.spec, advisory)
+        self.analysis = self.strategy.analyze(self.frames, now, self.spec, self.interpreter.current(now))
+        hunt = self._run_hunt()
+        self.analysis["hunt"] = hunt
+        if hunt.get("action") == "FIRE":
+            self.analysis["fire"] = True
+            self.analysis["gate_reason"] = None
+            self.analysis["summary"] = " | ".join(hunt.get("why_state") or ["C-Fast V2.1"])
+            self.analysis.setdefault("bias", {})["direction"] = hunt.get("direction")
+            self.analysis.setdefault("entry", {})["direction"] = hunt.get("direction")
+        else:
+            self.analysis["fire"] = False
+            self.analysis["gate_reason"] = (hunt.get("why_state") or ["WAIT"])[0]
         blocked = self.analysis["gate_reason"]
-        cool = self._cooling(now)
         opened = None
         if self.book.layers:
-            blocked = blocked or "brain: clip already open"
-        elif cool:
-            blocked = cool
-        elif self.analysis["fire"] and self.gate_state["blocked"]:
-            blocked = f"News gate active: {self.gate_state['event']['title']}"
+            blocked = blocked or "clip already open"
+        elif self.analysis["fire"] and self.gate_state.get("blocked"):
+            blocked = f"News gate: {self.gate_state.get('event', {}).get('title')}"
         elif self.analysis["fire"] and not self.auto_trade:
             blocked = "Auto-trade paused by operator"
         elif self.analysis["fire"] and self.tick:
-            prop = self.strategy.propose_entry(self.analysis, self.frames, self.book, self.spec, self.tick.bid, self.tick.ask)
-            if prop and (not prop.get("blocked") or self.fixed_lots):
-                direction = prop.get("direction") or self.analysis.get("bias", {}).get("direction")
-                entry = self.tick.ask if direction == "long" else self.tick.bid
-                sl = entry - self.sl_dollars if direction == "long" else entry + self.sl_dollars
-                tp = entry + self.tp_dollars if direction == "long" else entry - self.tp_dollars
+            direction = (hunt.get("direction") or "").lower()
+            if direction in ("long", "short") and hunt.get("entry"):
+                sl_dist = self.sl_dollars if self.sl_dollars else abs(float(hunt["entry"]) - float(hunt["stop"]))
                 lots = self.fixed_lots
-                risk_usd = lots * self.sl_dollars * self.spec.contract_size
-                order = self.adapter.place_order(direction, lots, sl)
+                order = self.adapter.place_order(direction, lots, None)
                 if order.get("ok"):
-                    entry = order.get("price") or entry
-                    sl = entry - self.sl_dollars if direction == "long" else entry + self.sl_dollars
-                    tp = entry + self.tp_dollars if direction == "long" else entry - self.tp_dollars
-                    opened = self.book.open_layer(direction, entry, sl, lots, risk_usd, now,
-                                                  self.analysis["votes"], self.analysis["entry"], self.analysis["summary"],
-                                                  self.analysis["session"], self.analysis["bias"], ticket=order.get("ticket"), tp=tp)
+                    fill = order.get("price") or float(hunt["entry"])
+                    sl, tp = self.cfast.apply_fixed_rr(fill, sl_dist, direction)
+                    risk_usd = lots * sl_dist * self.spec.contract_size
+                    opened = self.book.open_layer(direction, fill, sl, lots, risk_usd, now,
+                                                  {}, self.analysis.get("entry") or {}, "C-Fast V2.1",
+                                                  self.analysis.get("session"), self.analysis.get("bias") or {},
+                                                  ticket=order.get("ticket"), tp=tp)
                     self.brain.open_thesis(opened, self.analysis)
                     rec = self.book.open_records(self.tick.mid)[-1]
-                    self._log(f"OPEN L{opened.layer_number} {opened.direction} {lots} @ {entry:.2f} SL {sl:.2f} TP {tp:.2f} | {self.analysis['summary']}")
+                    self._log(f"OPEN {hunt.get('setup_id')} {direction} {lots} @ {fill:.2f} SL {sl:.2f} TP {tp:.2f} RR=1:3")
                     await self.broadcast({"type": "trade_opened", "trade": rec, "thesis": self.brain.theses[opened.id].to_dict()})
                 else:
                     blocked = f"Order rejected: {order}"
-            elif prop:
-                blocked = prop["blocked"]
+            else:
+                blocked = (hunt.get("why_state") or ["no C-Fast setup"])[0]
         self.analysis["gate_reason"] = blocked
         self.analysis["executed"] = opened.id if opened else None
-        await self.broadcast({"type": "analysis", "analysis": self.analysis, "layers": self.book.open_records(self.tick.mid if self.tick else 0)})
+        await self.broadcast({"type": "analysis", "analysis": self.analysis,
+                              "layers": self.book.open_records(self.tick.mid if self.tick else 0)})
 
     async def _closed(self, rec: dict):
         self.last_exit_at = self.tick.time if self.tick else datetime.utcnow()
-        self.brain.close(rec.get("id"), self.tick.time if self.tick else datetime.utcnow(), rec.get("exit_reason", ""))
-        self._log(f"CLOSE L{rec['layer_number']} {rec['direction']} {rec['exit_reason']} @ {rec['exit_price']} -> {rec['r_text']} / {rec['pnl_text']}")
+        ts = int(self.last_exit_at.timestamp()) if self.last_exit_at else 0
+        self.cfast.on_exit(rec, ts)
+        self.brain.close(rec.get("id"), self.last_exit_at, rec.get("exit_reason", ""))
+        self._log(f"CLOSE L{rec.get('layer_number')} {rec.get('direction')} {rec.get('exit_reason')} @ {rec.get('exit_price')}")
         await self.persist(rec)
         await self.broadcast({"type": "trade_closed", "trade": rec})
 
@@ -257,6 +225,17 @@ class LiveEngine:
                 await self._closed(rec)
                 return rec
         return None
+
+    def _run_hunt(self):
+        c15 = frames_to_candles(self.frames.get("M15"))
+        c5 = frames_to_candles(self.frames.get("M5"))
+        c1 = frames_to_candles(self.frames.get("H1"))
+        c4 = frames_to_candles(self.frames.get("H4"))
+        if not c15 or not c5:
+            return {"action": "WAIT", "why_state": ["C-Fast V2.1 needs M15/M5"]}
+        parent = c5[-1]["ts"] - (c5[-1]["ts"] % 900)
+        live = [b for b in c5 if b["ts"] >= parent]
+        return self.cfast.evaluate(c15, c5[-1], live_5ms=live or [c5[-1]], candles_4h=c4, candles_1h=c1, candles_5m=c5)
 
     def _log(self, msg: str):
         log.info(msg)
