@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { createChart, CandlestickSeries, HistogramSeries, createSeriesMarkers, ColorType, CrosshairMode } from "lightweight-charts";
 import { api } from "@/lib/api";
 
-const TFS = ["D1", "H4", "H1", "M5"];
+const TFS = ["D1", "H4", "H1", "M15", "M5", "M1"];
 
 export default function PriceChart({ layers = [], barUpdates, tick, title = "XAUUSD" }) {
   const elRef = useRef(null);
@@ -42,7 +42,6 @@ export default function PriceChart({ layers = [], barUpdates, tick, title = "XAU
 
   useEffect(() => { load(tf); }, [tf, load]);
 
-  // new completed bars pushed from the backend
   useEffect(() => {
     if (!barUpdates?.bars?.[tf]) return;
     for (const b of barUpdates.bars[tf]) {
@@ -54,10 +53,9 @@ export default function PriceChart({ layers = [], barUpdates, tick, title = "XAU
     }
   }, [barUpdates, tf]);
 
-  // live tick paints the forming candle
   useEffect(() => {
     if (!tick || !lastBarRef.current) return;
-    const secs = { M5: 300, H1: 3600, H4: 14400, D1: 86400 }[tf];
+    const secs = { M1: 60, M5: 300, M15: 900, H1: 3600, H4: 14400, D1: 86400 }[tf];
     const tSec = Math.floor(new Date(tick.time).getTime() / 1000);
     const bucket = Math.floor(tSec / secs) * secs;
     const lb = lastBarRef.current;
@@ -70,7 +68,6 @@ export default function PriceChart({ layers = [], barUpdates, tick, title = "XAU
     }
   }, [tick, tf]);
 
-  // layer entry / SL / trail overlays
   useEffect(() => {
     const s = seriesRef.current; if (!s) return;
     linesRef.current.forEach((l) => s.removePriceLine(l)); linesRef.current = [];
@@ -81,7 +78,7 @@ export default function PriceChart({ layers = [], barUpdates, tick, title = "XAU
       linesRef.current.push(s.createPriceLine({ price: l.sl, color: "#f97316", lineWidth: 1, lineStyle: 2, title: `L${l.layer_number} SL` }));
       if (l.trail_level) linesRef.current.push(s.createPriceLine({ price: l.trail_level, color: "#06b6d4", lineWidth: 1, lineStyle: 3, title: `L${l.layer_number} trail TP` }));
       const t = Math.floor(new Date(l.timestamp).getTime() / 1000);
-      const secs = { M5: 300, H1: 3600, H4: 14400, D1: 86400 }[tf];
+      const secs = { M1: 60, M5: 300, M15: 900, H1: 3600, H4: 14400, D1: 86400 }[tf];
       markers.push({ time: Math.floor(t / secs) * secs, position: l.direction === "long" ? "belowBar" : "aboveBar", color: c, shape: l.direction === "long" ? "arrowUp" : "arrowDown", text: `L${l.layer_number}` });
     });
     markers.sort((a, b) => a.time - b.time);
