@@ -21,7 +21,6 @@ def _med(xs):
 def max_dd(equity: List[dict], start: float) -> dict:
     peak = start
     dd = 0.0
-    dd_r = 0.0
     for p in equity:
         eq = float(p.get("equity") or start)
         peak = max(peak, eq)
@@ -29,8 +28,17 @@ def max_dd(equity: List[dict], start: float) -> dict:
     return {"max_drawdown": round(dd, 2), "max_drawdown_pct": round(dd / start, 4) if start else None}
 
 
+def is_eod(t: dict) -> bool:
+    return str(t.get("exit_reason") or "").upper() in ("END_OF_DATA", "OPEN_AT_END")
+
+
+def realized(trades: List[dict]) -> List[dict]:
+    return [t for t in trades if t.get("status") == "closed" and t.get("in_test") and not is_eod(t)]
+
+
 def summarize(trades: List[dict], start_balance: float, equity: List[dict]) -> dict:
-    closed = [t for t in trades if t.get("status") == "closed"]
+    closed = realized(trades)
+    eod = [t for t in trades if t.get("status") == "closed" and is_eod(t)]
     wins = [t for t in closed if t.get("outcome") == "win"]
     losses = [t for t in closed if t.get("outcome") == "loss"]
     longs = [t for t in closed if t.get("direction") == "long"]
@@ -68,11 +76,14 @@ def summarize(trades: List[dict], start_balance: float, equity: List[dict]) -> d
         "average_mfe_r": _avg(mfe_r), "average_mae_r": _avg(mae_r),
         **max_dd(equity, start_balance),
         "by_exit": {r: sum(1 for t in closed if t.get("exit_reason") == r) for r in {t.get("exit_reason") for t in closed}},
+        "open_at_end": len(eod),
+        "end_of_data_pnl": round(sum(t.get("pnl_usd") or 0 for t in eod), 2),
+        "end_of_data_r": round(sum(t.get("r_multiple") or 0 for t in eod), 4),
     }
 
 
 def breakdown(trades: List[dict], key: str) -> Dict[str, dict]:
-    closed = [t for t in trades if t.get("status") == "closed"]
+    closed = realized(trades)
     keys = sorted({str(t.get(key) or "NA") for t in closed})
     out = {}
     for k in keys:
