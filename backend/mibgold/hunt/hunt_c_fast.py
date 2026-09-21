@@ -1,11 +1,19 @@
-"""Hunt C-fast for MIB Gold.\n\nSame door as mib-trader-desktop observation_hunt_c_fast:\n  15m CHoCH or non-extended BOS arms the hunt\n  5m #3 close through prior 15m high/low, or tap of the 15m level on #1/#2\n  4h weather must allow the side\n  fill at the 15m level, SL 1.5 ATR / TP 2.5 ATR\n"""
+"""Hunt C-fast for MIB Gold.
+
+Early door only:
+  15m CHoCH or first BOS arms the hunt
+  FIRE only when a 5m tap hits the 15m level
+  Never fire on slot-3 close-through (that is the late impulse)
+  4h weather must allow the side
+  fill at the 15m level
+"""
 from __future__ import annotations
 from typing import Dict, List, Optional
 from .weather import classify, side_allowed
 
 LONG, SHORT, NEUTRAL = "LONG", "SHORT", "NEUTRAL"
 SL_ATR, TP_ATR = 1.5, 2.5
-HUNT_VERSION_C_FAST = "OBSERVATION_HUNT_M5_C_FAST"
+HUNT_VERSION_C_FAST = "OBSERVATION_HUNT_M5_C_FAST_EARLY"
 
 
 def parent_open(ts5: int) -> int:
@@ -118,25 +126,16 @@ def evaluate_hunt_c_fast(
                      extra={"event": event, "weather_flag": wx.get("flag"), "slot": slot, "armed": True})
     prior = candles_15m[-2] if len(candles_15m) >= 2 else candles_15m[-1]
     prior_high, prior_low = float(prior["high"]), float(prior["low"])
-    c = float(candle_5m["close"])
     hi, lo = float(candle_5m["high"]), float(candle_5m["low"])
-    path = None
-    if slot == 3:
-        if side == LONG and c > prior_high:
-            path = "impulse_3"
-        elif side == SHORT and c < prior_low:
-            path = "impulse_3"
-        else:
-            return _wait("The third 5-minute candle did not close through the last 15-minute high or low. No entry.",
-                         extra={"event": event, "slot": slot, "armed": True, "weather_flag": (wx or {}).get("flag")})
-    else:
-        band = 0.25 * atr15 if atr15 else 0.4
-        tagged = (side == LONG and lo <= (level or prior_high) + band) or (side == SHORT and hi >= (level or prior_low) - band)
-        if not tagged:
-            return _wait("This 5-minute candle did not tap the 15-minute level. Waiting.",
-                         extra={"event": event, "slot": slot, "armed": True, "weather_flag": (wx or {}).get("flag")})
-        path = "v2_clean"
     lvl = float(level or (prior_high if side == LONG else prior_low))
+    band = 0.25 * atr15 if atr15 else 0.4
+    tagged = (side == LONG and lo <= lvl + band) or (side == SHORT and hi >= lvl - band)
+    if not tagged:
+        return _wait(
+            f"Early hunt: waiting for tap of 15m level {lvl:.2f}. No impulse-3 chase.",
+            extra={"event": event, "slot": slot, "armed": True, "weather_flag": (wx or {}).get("flag"),
+                   "entry": lvl, "direction": side.lower()},
+        )
     if side == LONG:
         stop, target = lvl - SL_ATR * atr15, lvl + TP_ATR * atr15
     else:
@@ -153,9 +152,9 @@ def evaluate_hunt_c_fast(
         "armed": True,
         "weather_flag": (wx or {}).get("flag"),
         "brain_version": HUNT_VERSION_C_FAST,
-        "why_state": ["Hunt C-fast", f"15m {event}", path, "fill at 15m level, not M5 close"],
+        "why_state": ["Hunt C-fast EARLY", f"15m {event}", "v2_clean tap", "fill at 15m level"],
         "blocking_reasons": [],
-        "hunt": {"armed": True, "level": lvl, "m5_path": path, "side": side, "event": event, "slot": slot},
+        "hunt": {"armed": True, "level": lvl, "m5_path": "v2_clean", "side": side, "event": event, "slot": slot},
     }
 
 
