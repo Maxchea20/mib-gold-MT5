@@ -5,7 +5,6 @@ import { pct, rTxt, usd } from "@/lib/format";
 
 const Field = ({ label, children }) => (<label className="flex flex-col gap-0.5"><span className="text-[9px] mono uppercase tracking-widest text-mute">{label}</span>{children}</label>);
 const DEFAULT_CSV = "data/GOLD#_M1_202606031118_202609141118.csv";
-
 function shortTime(t) {
   if (!t) return "-";
   return String(t).replace("T", " ").slice(5, 16);
@@ -14,7 +13,7 @@ function shortTime(t) {
 export default function BacktestLab({ feed }) {
   const [form, setForm] = useState({
     days: 30, start_balance: 100, max_layers: 1, budget_pct: 0.1, slippage_points: 5, use_news_gate: true,
-    csv_path: DEFAULT_CSV, fixed_lots: 0.02, min_risk_usd: 1, max_risk_usd: 100, book: "cfast_v21_h3",
+    csv_path: DEFAULT_CSV, fixed_lots: 0.02, min_risk_usd: 1, max_risk_usd: 100, book: "cfast_v21_h2",
   });
   const [runId, setRunId] = useState(null);
   const [progress, setProgress] = useState(0);
@@ -34,9 +33,7 @@ export default function BacktestLab({ feed }) {
       if (r.stats || r.status === "done") {
         setResult(r); setProgress(1);
         if (Array.isArray(r.trades) && r.trades.length) setTrades(r.trades);
-        else {
-          try { setTrades(await api.backtestTrades(id)); } catch (e) { setTrades([]); }
-        }
+        else { try { setTrades(await api.backtestTrades(id)); } catch (e) { setTrades([]); } }
       }
     } catch (e) {
       const msg = e?.response?.data?.detail || e.message || "";
@@ -44,7 +41,6 @@ export default function BacktestLab({ feed }) {
       setErr(msg);
     }
   };
-
   useEffect(() => {
     const b = feed.backtest;
     if (!b || (runId && b.id !== runId)) return;
@@ -52,7 +48,6 @@ export default function BacktestLab({ feed }) {
     if (b.error) setErr(b.error);
     if (b.done && (runId || b.id)) finish(runId || b.id);
   }, [feed.backtest, runId]);
-
   useEffect(() => {
     if (!runId || result || err) return;
     finish(runId);
@@ -66,12 +61,10 @@ export default function BacktestLab({ feed }) {
     if (!body.csv_path) delete body.csv_path;
     try { const r = await api.runBacktest(body); setRunId(r.id); setForm((f) => ({ ...f, book: body.book })); } catch (e) { setErr(e?.response?.data?.detail || e.message); }
   };
-
   const exportReport = async (kind) => {
     if (!runId) { setErr("Run a backtest first."); return; }
     try { await api.exportBacktest(runId, kind); setErr(null); } catch (e) { setErr(e?.response?.data?.detail || e.message || "export failed"); }
   };
-
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.type === "checkbox" ? e.target.checked : (e.target.type === "text" ? e.target.value : Number(e.target.value)) }));
   const running = runId && !result && !err;
   const pctRun = Math.max(0, Math.min(100, progress * 100));
@@ -83,7 +76,7 @@ export default function BacktestLab({ feed }) {
     <div className="flex-1 flex min-h-0">
       <div className="w-[280px] shrink-0 border-r border-[var(--hair)] overflow-y-auto">
         <div className="panel-head">Lab books</div>
-        <div className="px-3 pt-2 text-[9px] mono text-mute">V2.1 = dead setup only, not whole direction</div>
+        <div className="px-3 pt-2 text-[9px] mono text-mute">V2.1+H2 = new setup ok, 15M TP</div>
         <div className="p-3 grid grid-cols-2 gap-2">
           <Field label="capital $"><input className="input" type="number" value={form.start_balance} onChange={set("start_balance")} /></Field>
           <Field label="lot"><input className="input" type="number" step="0.01" value={form.fixed_lots} onChange={set("fixed_lots")} /></Field>
@@ -91,9 +84,10 @@ export default function BacktestLab({ feed }) {
           <Field label="layers"><input className="input" type="number" value={form.max_layers} onChange={set("max_layers")} /></Field>
         </div>
         <div className="px-3 pb-3 flex flex-col gap-2">
-          <button className={`btn active w-full ${running ? "breathe" : ""}`} onClick={() => run("cfast_v21_h3")} disabled={!!running}>
-            {running && form.book === "cfast_v21_h3" ? `running ${pctRun.toFixed(0)}%` : "run C-Fast V2.1+H3 2.5/5"}
+          <button className={`btn active w-full ${running ? "breathe" : ""}`} onClick={() => run("cfast_v21_h2")} disabled={!!running}>
+            {running && form.book === "cfast_v21_h2" ? `running ${pctRun.toFixed(0)}%` : "run C-Fast V2.1+H2"}
           </button>
+          <button className="btn w-full" onClick={() => run("cfast_v21_h3")} disabled={!!running}>run C-Fast V2.1+H3 2.5/5</button>
           <button className="btn w-full" onClick={() => run("cfast_v2_h3")} disabled={!!running}>run C-Fast V2+H3 2.5/5</button>
           <button className="btn w-full" onClick={() => run("cfast_v2_h2")} disabled={!!running}>run C-Fast V2+H2</button>
           <button className="btn w-full" onClick={() => run("hunt_h2")} disabled={!!running}>run Hunt H2</button>
@@ -158,7 +152,6 @@ export default function BacktestLab({ feed }) {
     </div>
   );
 }
-
 function Stat({ k, v, good, gold }) {
   const cls = gold ? "text-gold" : good === true ? "text-bull" : good === false ? "text-bear" : "";
   return (<div><div className="text-[9px] uppercase tracking-widest text-mute">{k}</div><div className={`text-[13px] ${cls}`}>{v}</div></div>);
