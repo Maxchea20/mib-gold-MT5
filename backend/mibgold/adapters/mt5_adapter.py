@@ -21,8 +21,8 @@ def _mt5_path() -> Optional[str]:
     if p.is_file():
         return str(p)
     for g in (
-        Path(r"C:\Program Files\MetaTrader 5\terminal64.exe"),
-        Path(r"C:\Program Files (x86)\MetaTrader 5\terminal64.exe"),
+        Path(r"C:\\Program Files\\MetaTrader 5\\terminal64.exe"),
+        Path(r"C:\\Program Files (x86)\\MetaTrader 5\\terminal64.exe"),
     ):
         if g.is_file():
             return str(g)
@@ -154,9 +154,12 @@ class MT5Adapter(DataAdapter):
         r = mt5.order_send(req)
         return {"ok": r is not None and r.retcode == mt5.TRADE_RETCODE_DONE, "retcode": getattr(r, "retcode", None)}
 
-    def modify_sl(self, ticket, sl: float) -> dict:
+    def modify_sl(self, ticket, sl: float, tp: float = 0.0) -> dict:
         mt5 = self.mt5
-        r = mt5.order_send({"action": mt5.TRADE_ACTION_SLTP, "symbol": self.symbol, "position": int(ticket), "sl": float(sl), "tp": 0.0})
+        req = {"action": mt5.TRADE_ACTION_SLTP, "symbol": self.symbol, "position": int(ticket), "sl": float(sl)}
+        if tp:
+            req["tp"] = float(tp)
+        r = mt5.order_send(req)
         return {"ok": r is not None and r.retcode == mt5.TRADE_RETCODE_DONE, "retcode": getattr(r, "retcode", None)}
 
     def positions(self) -> List[dict]:
