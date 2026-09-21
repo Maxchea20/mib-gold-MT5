@@ -35,13 +35,21 @@ def write_report(bt_id: str, fmt: str, doc: Dict[str, Any], trades: List[dict]) 
             "exit_reason": t.get("exit_reason") or t.get("exit_type"),
             "r": t.get("r_multiple") if t.get("r_multiple") is not None else t.get("r"),
             "pnl": t.get("pnl") if t.get("pnl") is not None else t.get("pnl_usd"),
+            "vol_bucket": t.get("vol_bucket"),
+            "market_regime": t.get("market_regime"),
+            "location_type": t.get("location_type"),
+            "mfe": t.get("mfe"),
+            "mae": t.get("mae"),
         })
     payload = {
         "id": bt_id,
-        "book": ((doc or {}).get("config") or {}).get("book") or "C-Fast V2.1",
+        "book": ((doc or {}).get("config") or {}).get("book") or "LIQ-JOIN M3",
         "range": (doc or {}).get("range"),
         "config": (doc or {}).get("config"),
         "stats": stats,
+        "by_session": (doc or {}).get("by_session"),
+        "by_direction": (doc or {}).get("by_direction"),
+        "by_volatility": (doc or {}).get("by_volatility"),
         "cfast_v2": (doc or {}).get("cfast_v2"),
         "final_balance": (doc or {}).get("final_balance"),
         "trades": rows,
@@ -54,12 +62,12 @@ def write_report(bt_id: str, fmt: str, doc: Dict[str, Any], trades: List[dict]) 
     lines = [
         f"FILE {path.name}", f"ID {bt_id}",
         f"STATS trades={stats.get('trades')} wr={stats.get('win_rate')} pf={stats.get('profit_factor')} net={stats.get('net_pnl')}",
-        "", "time\tside\tL\tsession\tin\tout\texit\tR\tpnl",
+        "", "time\tside\tsession\tvol\tin\tout\texit\tR\tpnl",
     ]
     for t in rows:
         lines.append("\t".join("" if x is None else str(x) for x in [
-            t.get("time"), str(t.get("side") or "").upper(), "L%s" % (t.get("layer") or ""),
-            t.get("session"), t.get("entry"), t.get("exit"), t.get("exit_reason"), t.get("r"), t.get("pnl"),
+            t.get("time"), str(t.get("side") or "").upper(), t.get("session"), t.get("vol_bucket"),
+            t.get("entry"), t.get("exit"), t.get("exit_reason"), t.get("r"), t.get("pnl"),
         ]))
     path.write_text("\n".join(lines), encoding="utf-8")
     return str(path)

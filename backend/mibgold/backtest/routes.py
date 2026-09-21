@@ -1,6 +1,4 @@
 """Extra backtest HTTP helpers imported by server.py."""
-from pathlib import Path
-from typing import Any, Dict, List
 
 
 def slim_trades(rows):
@@ -21,6 +19,12 @@ def slim_trades(rows):
             "exit_price": t.get("exit_price") or t.get("exit"),
             "exit_reason": t.get("exit_reason"),
             "r_multiple": t.get("r_multiple") if t.get("r_multiple") is not None else t.get("r"),
+            "r": t.get("r_multiple") if t.get("r_multiple") is not None else t.get("r"),
             "pnl": t.get("pnl"),
+            "vol_bucket": t.get("vol_bucket"),
+            "market_regime": t.get("market_regime"),
+            "location_type": t.get("location_type"),
+            "mfe": t.get("mfe"),
+            "mae": t.get("mae"),
         })
     return out
