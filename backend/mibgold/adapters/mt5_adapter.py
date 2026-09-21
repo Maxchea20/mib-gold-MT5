@@ -1,4 +1,4 @@
-"""Real MetaTrader5 adapter (Windows only). Imports the mt5 package lazily so the rest of the system runs anywhere."""
+"""Real MetaTrader5 adapter (Windows only)."""
 from __future__ import annotations
 import os
 from datetime import datetime, timedelta, timezone
@@ -12,19 +12,17 @@ ORDER_COMMENT = "mib-gold"
 
 
 def _mt5_path() -> Optional[str]:
-    raw = os.environ.get("MT5_PATH") or ""
-    raw = raw.strip().strip('"').strip("'")
+    raw = (os.environ.get("MT5_PATH") or "").strip().strip('"').strip("'")
     if not raw:
         return None
     raw = raw.replace("\\", "/")
     p = Path(raw)
     if p.is_file():
         return str(p)
-    guesses = [
+    for g in (
         Path(r"C:\Program Files\MetaTrader 5\terminal64.exe"),
         Path(r"C:\Program Files (x86)\MetaTrader 5\terminal64.exe"),
-    ]
-    for g in guesses:
+    ):
         if g.is_file():
             return str(g)
     return str(p)
@@ -107,11 +105,17 @@ class MT5Adapter(DataAdapter):
     def place_order(self, direction: str, lots: float, sl: float, comment: str = ORDER_COMMENT) -> dict:
         mt5 = self.mt5
         tick = mt5.symbol_info_tick(self.symbol)
+        if tick is None:
+            return {"ok": False, "comment": "no tick"}
         buy = direction == "long"
+        price = tick.ask if buy else tick.bid
+        sl_dist = float(os.environ.get("SL_DOLLARS", "1.0"))
+        if sl is None:
+            sl = price - sl_dist if buy else price + sl_dist
         req = {
             "action": mt5.TRADE_ACTION_DEAL, "symbol": self.symbol, "volume": float(lots),
             "type": mt5.ORDER_TYPE_BUY if buy else mt5.ORDER_TYPE_SELL,
-            "price": tick.ask if buy else tick.bid, "sl": float(sl), "tp": 0.0,
+            "price": price, "sl": float(sl), "tp": 0.0,
             "deviation": int(os.environ.get("MT5_DEVIATION_POINTS", "30")), "magic": 20260601,
             "comment": comment[:31], "type_time": mt5.ORDER_TIME_GTC, "type_filling": mt5.ORDER_FILLING_IOC,
         }
