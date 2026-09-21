@@ -13,7 +13,7 @@ function shortTime(t) {
 export default function BacktestLab({ feed }) {
   const [form, setForm] = useState({
     days: 30, start_balance: 100, max_layers: 1, budget_pct: 0.1, slippage_points: 5, use_news_gate: true,
-    csv_path: DEFAULT_CSV, fixed_lots: 0.02, min_risk_usd: 1, max_risk_usd: 100, book: "liq_join_m3",
+    csv_path: DEFAULT_CSV, fixed_lots: 0.02, min_risk_usd: 1, max_risk_usd: 100, book: "liq_join_m3_r1",
   });
   const [runId, setRunId] = useState(null);
   const [progress, setProgress] = useState(0);
@@ -76,7 +76,7 @@ export default function BacktestLab({ feed }) {
     <div className="flex-1 flex min-h-0">
       <div className="w-[280px] shrink-0 border-r border-[var(--hair)] overflow-y-auto">
         <div className="panel-head">Lab books</div>
-        <div className="px-3 pt-2 text-[9px] mono text-mute">M3 = faster close-through than 5M</div>
+        <div className="px-3 pt-2 text-[9px] mono text-mute">1R = skip if next pool closer than SL</div>
         <div className="p-3 grid grid-cols-2 gap-2">
           <Field label="capital $"><input className="input" type="number" value={form.start_balance} onChange={set("start_balance")} /></Field>
           <Field label="lot"><input className="input" type="number" step="0.01" value={form.fixed_lots} onChange={set("fixed_lots")} /></Field>
@@ -84,14 +84,13 @@ export default function BacktestLab({ feed }) {
           <Field label="layers"><input className="input" type="number" value={form.max_layers} onChange={set("max_layers")} /></Field>
         </div>
         <div className="px-3 pb-3 flex flex-col gap-2">
-          <button className={`btn active w-full ${running ? "breathe" : ""}`} onClick={() => run("liq_join_m3")} disabled={!!running}>
-            {running && form.book === "liq_join_m3" ? `running ${pctRun.toFixed(0)}%` : "run LIQ-JOIN M3"}
+          <button className={`btn active w-full ${running ? "breathe" : ""}`} onClick={() => run("liq_join_m3_r1")} disabled={!!running}>
+            {running && form.book === "liq_join_m3_r1" ? `running ${pctRun.toFixed(0)}%` : "run LIQ-JOIN M3 1R"}
           </button>
+          <button className="btn w-full" onClick={() => run("liq_join_m3")} disabled={!!running}>run LIQ-JOIN M3</button>
           <button className="btn w-full" onClick={() => run("liq_join")} disabled={!!running}>run LIQ-JOIN V1</button>
           <button className="btn w-full" onClick={() => run("cfast_v21_h2")} disabled={!!running}>run C-Fast V2.1+H2</button>
-          <button className="btn w-full" onClick={() => run("cfast_v21_h3")} disabled={!!running}>run C-Fast V2.1+H3 2.5/5</button>
           <button className="btn w-full" onClick={() => run("hunt_h2")} disabled={!!running}>run Hunt H2</button>
-          <button className="btn w-full" onClick={() => run("cont_h1")} disabled={!!running}>run CONT-H1</button>
           <button className="btn w-full" onClick={() => run("scalp_v1")} disabled={!!running}>run Scalp V1</button>
           {running && <div className="text-[9px] mono text-mute">{tick || "walking M1"}</div>}
           <button className="btn w-full" disabled={!runId} onClick={() => exportReport("json")}>download JSON</button>
