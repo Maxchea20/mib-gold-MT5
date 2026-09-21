@@ -4,6 +4,7 @@ from typing import Callable, Dict, List, Optional
 from .liq_join import LiqJoinEngine, LiqConfig
 from . import core
 from . import hunt_tp_bind
+from .regime import snapshot
 
 
 def m3_from_m1(m1: List[dict]) -> List[dict]:
@@ -27,7 +28,6 @@ def m3_from_m1(m1: List[dict]) -> List[dict]:
             if r["low"] < l:
                 l = r["low"]
             c = r["close"]
-    # only append last bucket if the 3rd minute has closed (ts minute % 3 == 2)
     if bucket is not None:
         last_min = (int(m1[-1]["ts"]) // 60) % 3
         if last_min == 2:
@@ -45,5 +45,14 @@ class LiqJoinM3(LiqJoinEngine):
         rows = m1 if isinstance(m1, list) else core.rows(m1) if m1 is not None else []
         m3 = m3_from_m1(rows)
         framed = dict(frames)
-        framed["M5"] = m3  # reuse parent: it reads frames['M5'] as the trigger TF
-        return super().evaluate(framed, now, spread)
+        framed["M5"] = m3
+        d = super().evaluate(framed, now, spread)
+        reg = snapshot(rows)
+        d["market_regime"] = reg
+        d["vol_bucket"] = reg.get("volatility") or d.get("vol_bucket")
+        if d.get("fire"):
+            meta = dict(d.get("meta") or {})
+            meta["market_regime"] = reg
+            meta["location_type"] = meta.get("location_type") or "15M_POOL"
+            d["meta"] = meta
+        return d
