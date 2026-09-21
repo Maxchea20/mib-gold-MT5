@@ -1,0 +1,4 @@
+In live.py _decide, compute sl BEFORE place_order:
+
+sl, tp = self.cfast.apply_fixed_rr(float(hunt['entry']), sl_dist, direction)
+order = self.adapter.place_order(direction, lots, sl)
