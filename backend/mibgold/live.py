@@ -1,4 +1,4 @@
-"""Live loop. M5 continuation + tape. C-Fast is not the fire door."""
+"""Live loop. Fixed SL/TP. No trail to breakeven."""
 from __future__ import annotations
 import asyncio
 import logging
@@ -16,7 +16,7 @@ from .engines.utils import safe_atr
 from .news import NewsGate, NewsInterpreter
 from .risk import RiskManager, ClampedAllocation
 from .strategy import TopDownStrategy, StrategyConfig
-from .trailing import TrailingTP
+from .trailing import TrailingTP, TrailingConfig
 from .bars_cache import load_m1, merge_live, upsert_m1
 from .hunt.hunt_c_fast import frames_to_candles
 from .hunt.cfast_v2 import CFastV2
@@ -42,7 +42,7 @@ class LiveEngine:
             max_usd=float(os.environ.get("MAX_RISK_USD", "100.0")),
         )
         self.risk = RiskManager(self.spec, budget_pct=budget, max_layers=max_layers, allocation=allocation)
-        self.book = PositionBook(self.spec, self.risk, TrailingTP(), float(acc["balance"]),
+        self.book = PositionBook(self.spec, self.risk, TrailingTP(TrailingConfig(activate_r=999)), float(acc["balance"]),
                                  mode="live" if adapter.name == "mt5" else "paper")
         self.fixed_lots = float(os.environ.get("FIXED_LOTS", "0.02"))
         self.sl_dollars = float(os.environ.get("SL_DOLLARS", "1.0"))
@@ -106,7 +106,7 @@ class LiveEngine:
             "session": self.analysis.get("session"), "account": snap, "today_pnl": round(today, 2),
             "news": self.gate_state, "analysis": self.analysis, "m5_atr": round(self.m5_atr, 3),
             "last_m5": self.last_m5.isoformat() if self.last_m5 else None,
-            "book_rules": {"layers": self.risk.max_layers, "lot": self.fixed_lots, "sl": self.sl_dollars, "tp": self.tp_dollars, "trail": True},
+            "book_rules": {"layers": self.risk.max_layers, "lot": self.fixed_lots, "sl": self.sl_dollars, "tp": self.tp_dollars, "trail": False},
             "theses": [t.to_dict() for t in self.brain.theses.values()],
         }
 
@@ -141,7 +141,6 @@ class LiveEngine:
         minute = now.replace(second=0, microsecond=0)
         if self.last_minute is None or minute > self.last_minute:
             await self._on_minute(minute, now)
-        prev_sl = {l.id: l.sl for l in self.book.layers}
         for rec in self.book.on_bar(tick.ask, tick.bid, tick.mid, self.m5_atr, now):
             if self.adapter.name == "mt5" and rec.get("ticket"):
                 try:
@@ -149,13 +148,6 @@ class LiveEngine:
                 except Exception:
                     log.exception("mt5 close after book exit")
             await self._closed(rec)
-        if self.adapter.name == "mt5":
-            for l in self.book.layers:
-                if l.ticket and prev_sl.get(l.id) != l.sl:
-                    try:
-                        self.adapter.modify_sl(l.ticket, round(l.sl, self.spec.digits), tp=l.tp or 0.0)
-                    except Exception:
-                        log.exception("mt5 trail SL modify failed")
         await self.broadcast(self._tick_payload())
 
     async def _on_minute(self, minute: datetime, now: datetime):
