@@ -1,4 +1,4 @@
-"""Live: desktop Hunt C. Fill at 15m level. SL 1.5 ATR / TP 2.5 ATR. No trail."""
+"""Live: Hunt C + C-Fast V2.1 keys. Gold collar SL 2.5 / TP 7.5. No trail."""
 from __future__ import annotations
 import asyncio
 import logging
@@ -42,7 +42,9 @@ class LiveEngine:
         self.risk = RiskManager(self.spec, budget_pct=budget, max_layers=max_layers, allocation=allocation)
         self.book = PositionBook(self.spec, self.risk, TrailingTP(TrailingConfig(activate_r=999)), float(acc["balance"]),
                                  mode="live" if adapter.name == "mt5" else "paper")
-        self.fixed_lots = float(os.environ.get("FIXED_LOTS", "0.02"))
+        self.fixed_lots = float(os.environ.get("FIXED_LOTS", "0.01"))
+        self.sl_dollars = float(os.environ.get("SL_DOLLARS", "2.5"))
+        self.tp_dollars = float(os.environ.get("TP_DOLLARS", "7.5"))
         self.brain = TradeBrain(dead_min=float(os.environ.get("DEAD_FILL_MIN", "2")),
                                 dead_r=float(os.environ.get("DEAD_FILL_R", "0.15")))
         self.cfast = CFastV2(log=lambda m: self._log(m))
@@ -96,7 +98,6 @@ class LiveEngine:
         price = self.tick.mid if self.tick else 0.0
         snap = self.book.snapshot(price)
         today = snap["balance"] - self.day_start_balance + snap["floating_pnl"]
-        hunt = self.analysis.get("hunt") or {}
         return {
             "connection": self.connection, "mode": self.book.mode, "auto_trade": self.auto_trade,
             "symbol": self.spec.to_dict(), "tick": self.tick.to_dict() if self.tick else None,
@@ -104,7 +105,7 @@ class LiveEngine:
             "news": self.gate_state, "analysis": self.analysis, "m5_atr": round(self.m5_atr, 3),
             "last_m5": self.last_m5.isoformat() if self.last_m5 else None,
             "book_rules": {"layers": self.risk.max_layers, "lot": self.fixed_lots,
-                           "sl": "1.5 ATR", "tp": "2.5 ATR", "atr15": hunt.get("atr_15m"), "trail": False},
+                           "sl": self.sl_dollars, "tp": self.tp_dollars, "trail": False},
             "theses": [t.to_dict() for t in self.brain.theses.values()],
         }
 
@@ -168,6 +169,11 @@ class LiveEngine:
         live = [b for b in c5 if b["ts"] >= parent]
         return self.cfast.evaluate(c15, c5[-1], live_5ms=live or [c5[-1]], candles_4h=c4, candles_1h=c1, candles_5m=c5)
 
+    def _sl_tp(self, fill: float, direction: str):
+        if direction == "long":
+            return fill - self.sl_dollars, fill + self.tp_dollars
+        return fill + self.sl_dollars, fill - self.tp_dollars
+
     async def _decide(self, now: datetime):
         self.analysis = self.strategy.analyze(self.frames, now, self.spec, self.interpreter.current(now))
         hunt = self._run_hunt()
@@ -191,15 +197,14 @@ class LiveEngine:
         elif hunt.get("action") == "FIRE" and self.tick:
             direction = (hunt.get("direction") or "").lower()
             level = float(hunt.get("entry") or 0)
-            sl = float(hunt.get("stop") or 0)
-            tp = float(hunt.get("target") or 0)
             live_px = float(self.tick.ask if direction == "long" else self.tick.bid)
             band = max(0.40, float(hunt.get("atr_15m") or 0) * 0.25)
             if abs(live_px - level) > band:
                 blocked = f"live {live_px:.2f} left 15m level {level:.2f} (band {band:.2f}) - no chase"
                 self._log(blocked)
                 self.cfast.active = None
-            elif direction in ("long", "short") and level and sl and tp:
+            elif direction in ("long", "short") and level:
+                sl, tp = self._sl_tp(level, direction)
                 lots = self.fixed_lots
                 try:
                     order = self.adapter.place_order(direction, lots, sl, tp=tp)
@@ -208,19 +213,18 @@ class LiveEngine:
                     self.cfast.active = None
                 if order.get("ok"):
                     fill = float(order.get("price") or level)
-                    dlt = fill - level
-                    sl, tp = sl + dlt, tp + dlt
-                    sl_dist = abs(fill - sl)
-                    risk_usd = lots * sl_dist * self.spec.contract_size
+                    sl, tp = self._sl_tp(fill, direction)
+                    risk_usd = lots * self.sl_dollars * self.spec.contract_size
                     opened = self.book.open_layer(direction, fill, sl, lots, risk_usd, now,
-                                                  {}, {"direction": direction}, "Hunt C",
+                                                  {}, {"direction": direction}, "Hunt C + V2.1",
                                                   self.analysis.get("session"), self.analysis.get("bias") or {},
                                                   ticket=order.get("ticket"), tp=tp)
                     self.brain.open_thesis(opened, self.analysis)
                     rec = self.book.open_records(self.tick.mid)[-1]
                     self._log(
-                        f"OPEN HuntC {hunt.get('event')} {direction} {lots} @ LVL {level:.2f} FILL {fill:.2f} "
-                        f"SL {sl:.2f} TP {tp:.2f} ATR15={float(hunt.get('atr_15m') or 0):.2f} path={(hunt.get('hunt') or {}).get('m5_path')}"
+                        f"OPEN HuntC+V21 {hunt.get('setup_id') or hunt.get('event')} {direction} {lots} "
+                        f"@ LVL {level:.2f} FILL {fill:.2f} SL {sl:.2f} TP {tp:.2f} "
+                        f"path={(hunt.get('hunt') or {}).get('m5_path')}"
                     )
                     await self.broadcast({"type": "trade_opened", "trade": rec, "thesis": self.brain.theses[opened.id].to_dict()})
                 else:
