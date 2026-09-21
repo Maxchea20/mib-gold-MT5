@@ -1,4 +1,4 @@
-"""Live loop. Glued 15m hunt. Fixed SL. No trail."""
+"""Live: desktop Hunt C. Fill at 15m level. SL 1.5 ATR / TP 2.5 ATR. No trail."""
 from __future__ import annotations
 import asyncio
 import logging
@@ -20,7 +20,6 @@ from .trailing import TrailingTP, TrailingConfig
 from .bars_cache import load_m1, merge_live, upsert_m1
 from .hunt.hunt_c_fast import frames_to_candles
 from .hunt.cfast_v2 import CFastV2
-from .hunt.tape import tape_ok
 
 log = logging.getLogger("mibgold.live")
 TFS = ("M5", "M15", "H1", "H4", "D1")
@@ -44,8 +43,6 @@ class LiveEngine:
         self.book = PositionBook(self.spec, self.risk, TrailingTP(TrailingConfig(activate_r=999)), float(acc["balance"]),
                                  mode="live" if adapter.name == "mt5" else "paper")
         self.fixed_lots = float(os.environ.get("FIXED_LOTS", "0.02"))
-        self.sl_dollars = float(os.environ.get("SL_DOLLARS", "1.0"))
-        self.tp_dollars = self.sl_dollars * 3.0
         self.brain = TradeBrain(dead_min=float(os.environ.get("DEAD_FILL_MIN", "2")),
                                 dead_r=float(os.environ.get("DEAD_FILL_R", "0.15")))
         self.cfast = CFastV2(log=lambda m: self._log(m))
@@ -99,13 +96,15 @@ class LiveEngine:
         price = self.tick.mid if self.tick else 0.0
         snap = self.book.snapshot(price)
         today = snap["balance"] - self.day_start_balance + snap["floating_pnl"]
+        hunt = self.analysis.get("hunt") or {}
         return {
             "connection": self.connection, "mode": self.book.mode, "auto_trade": self.auto_trade,
             "symbol": self.spec.to_dict(), "tick": self.tick.to_dict() if self.tick else None,
             "session": self.analysis.get("session"), "account": snap, "today_pnl": round(today, 2),
             "news": self.gate_state, "analysis": self.analysis, "m5_atr": round(self.m5_atr, 3),
             "last_m5": self.last_m5.isoformat() if self.last_m5 else None,
-            "book_rules": {"layers": self.risk.max_layers, "lot": self.fixed_lots, "sl": self.sl_dollars, "tp": self.tp_dollars, "trail": False},
+            "book_rules": {"layers": self.risk.max_layers, "lot": self.fixed_lots,
+                           "sl": "1.5 ATR", "tp": "2.5 ATR", "atr15": hunt.get("atr_15m"), "trail": False},
             "theses": [t.to_dict() for t in self.brain.theses.values()],
         }
 
@@ -164,7 +163,7 @@ class LiveEngine:
         c1 = frames_to_candles(self.frames.get("H1"))
         c4 = frames_to_candles(self.frames.get("H4"))
         if not c15 or not c5:
-            return {"action": "WAIT", "why_state": ["C-Fast needs M15/M5"]}
+            return {"action": "WAIT", "why_state": ["Hunt C needs M15/M5"]}
         parent = c5[-1]["ts"] - (c5[-1]["ts"] % 900)
         live = [b for b in c5 if b["ts"] >= parent]
         return self.cfast.evaluate(c15, c5[-1], live_5ms=live or [c5[-1]], candles_4h=c4, candles_1h=c1, candles_5m=c5)
@@ -176,7 +175,7 @@ class LiveEngine:
         if hunt.get("action") == "FIRE":
             self.analysis["fire"] = True
             self.analysis["gate_reason"] = None
-            self.analysis["summary"] = " | ".join(hunt.get("why_state") or ["C-Fast EARLY"])
+            self.analysis["summary"] = " | ".join(hunt.get("why_state") or ["Hunt C"])
             self.analysis.setdefault("bias", {})["direction"] = hunt.get("direction")
         else:
             self.analysis["fire"] = False
@@ -192,21 +191,15 @@ class LiveEngine:
         elif hunt.get("action") == "FIRE" and self.tick:
             direction = (hunt.get("direction") or "").lower()
             level = float(hunt.get("entry") or 0)
-            tape_pass, tape_why = tape_ok(direction, self.analysis.get("votes") or {}, self.frames.get("M5"))
-            self.analysis["tape"] = tape_why
+            sl = float(hunt.get("stop") or 0)
+            tp = float(hunt.get("target") or 0)
             live_px = float(self.tick.ask if direction == "long" else self.tick.bid)
             band = max(0.40, float(hunt.get("atr_15m") or 0) * 0.25)
-            if not tape_pass:
-                blocked = tape_why
-                self._log(tape_why)
-                self.cfast.active = None
-            elif abs(live_px - level) > band:
+            if abs(live_px - level) > band:
                 blocked = f"live {live_px:.2f} left 15m level {level:.2f} (band {band:.2f}) - no chase"
                 self._log(blocked)
                 self.cfast.active = None
-            elif direction in ("long", "short") and level:
-                sl_dist = float(self.sl_dollars)
-                sl, tp = self.cfast.apply_fixed_rr(level, sl_dist, direction)
+            elif direction in ("long", "short") and level and sl and tp:
                 lots = self.fixed_lots
                 try:
                     order = self.adapter.place_order(direction, lots, sl, tp=tp)
@@ -215,22 +208,27 @@ class LiveEngine:
                     self.cfast.active = None
                 if order.get("ok"):
                     fill = float(order.get("price") or level)
-                    sl, tp = self.cfast.apply_fixed_rr(fill, sl_dist, direction)
+                    dlt = fill - level
+                    sl, tp = sl + dlt, tp + dlt
+                    sl_dist = abs(fill - sl)
                     risk_usd = lots * sl_dist * self.spec.contract_size
                     opened = self.book.open_layer(direction, fill, sl, lots, risk_usd, now,
-                                                  {}, {"direction": direction}, "C-Fast EARLY",
+                                                  {}, {"direction": direction}, "Hunt C",
                                                   self.analysis.get("session"), self.analysis.get("bias") or {},
                                                   ticket=order.get("ticket"), tp=tp)
                     self.brain.open_thesis(opened, self.analysis)
                     rec = self.book.open_records(self.tick.mid)[-1]
-                    self._log(f"OPEN {hunt.get('setup_id')} {direction} {lots} @ LVL {level:.2f} FILL {fill:.2f} SL {sl:.2f} TP {tp:.2f} {tape_why}")
+                    self._log(
+                        f"OPEN HuntC {hunt.get('event')} {direction} {lots} @ LVL {level:.2f} FILL {fill:.2f} "
+                        f"SL {sl:.2f} TP {tp:.2f} ATR15={float(hunt.get('atr_15m') or 0):.2f} path={(hunt.get('hunt') or {}).get('m5_path')}"
+                    )
                     await self.broadcast({"type": "trade_opened", "trade": rec, "thesis": self.brain.theses[opened.id].to_dict()})
                 else:
                     self.cfast.active = None
                     blocked = f"Order rejected: {order}"
                     self._log(blocked)
             else:
-                blocked = (hunt.get("why_state") or ["no C-Fast setup"])[0]
+                blocked = (hunt.get("why_state") or ["no Hunt C setup"])[0]
         self.analysis["gate_reason"] = blocked
         self.analysis["executed"] = opened.id if opened else None
         await self.broadcast({"type": "analysis", "analysis": self.analysis,
