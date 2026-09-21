@@ -1,8 +1,10 @@
-"""V1 research harness. Same scalp.Engine. No TrailingTP. No live wiring."""
+"""V1 research harness. Prebuilt candles. Same scalp.Engine rules."""
 from __future__ import annotations
+import bisect
 import json
 import os
 import threading
+import time
 from pathlib import Path
 from typing import Callable, Dict, Optional
 import pandas as pd
@@ -13,14 +15,15 @@ from ..news.calendar import NewsGate
 from ..risk import RiskManager, SymbolSpec, ClampedAllocation
 from ..session import session_for
 from ..scalp import Engine, ScalpConfig
+from ..scalp.core import rows
 from .research_stats import summarize, breakdown, conversions
 
 TFS = ("M1", "M5", "M15", "H1", "H4", "D1")
 EVENT_DIR = Path(os.environ.get("MIBGOLD_EVENT_DIR", "backend/data"))
+TF_SEC = {tf: int(pd.Timedelta(RULES[tf]).total_seconds()) for tf in TFS if tf != "M1"}
 
 
 class StructuralOnly:
-    """Book adapter: SL hit only. No trail, no TP."""
     def update(self, layer, price, atr):
         return None
 
@@ -57,6 +60,11 @@ class Backtest:
         self.engine = Engine(ScalpConfig())
         self._path = {}
         self._meta = {}
+        self.processed_m1 = 0
+        self.total_m1 = 0
+        self.current_ts = None
+        self.started_at = None
+        self.runtime_sec = None
 
     def stop(self):
         self._stop = True
@@ -72,21 +80,27 @@ class Backtest:
         return self.result
 
     def _run(self, on_progress):
+        t0 = time.time()
+        self.started_at = t0
         frames = all_frames(self.m1, TFS)
-        m1 = frames["M1"]
-        ends = {tf: pd.DatetimeIndex(frames[tf]["time"] + pd.Timedelta(RULES[tf])) for tf in TFS if tf != "M1"}
-        n = len(m1)
+        candles = {tf: rows(frames[tf]) for tf in TFS}
+        ends = {tf: [c["ts"] + TF_SEC[tf] for c in candles[tf]] for tf in TF_SEC}
+        m1c = candles["M1"]
+        n = len(m1c)
         warm = max(self.warmup, 400)
+        self.total_m1 = max(0, n - warm)
         EVENT_DIR.mkdir(parents=True, exist_ok=True)
         ev_path = EVENT_DIR / f"{self.id}_events.jsonl"
         ev_f = open(ev_path, "w", encoding="utf-8")
+        buf = []
         try:
             for i in range(warm, n):
                 if self._stop:
                     break
-                bar = m1.iloc[i]
-                now = (bar["time"] + pd.Timedelta(minutes=1)).to_pydatetime()
-                hi, lo, close = float(bar["high"]), float(bar["low"]), float(bar["close"])
+                bar = m1c[i]
+                now_ts = int(bar["ts"] + 60)
+                now = pd.Timestamp(now_ts, unit="s", tz="UTC").to_pydatetime()
+                hi, lo, close = bar["high"], bar["low"], bar["close"]
                 a = abs(hi - lo) or 0.3
                 for layer in self.book.layers:
                     st = self._path.setdefault(layer.id, {"mfe": 0.0, "mae": 0.0})
@@ -97,21 +111,21 @@ class Backtest:
                         st["mfe"] = max(st["mfe"], layer.entry - lo)
                         st["mae"] = max(st["mae"], hi - layer.entry)
                 closed = self.book.on_bar(hi, lo, close, a, now, slippage=self.slippage)
-                now_ts = int(pd.Timestamp(now).timestamp())
                 for rec in closed:
                     self._stamp(rec, now)
                     self.engine.on_exit(rec, now_ts)
-                window = {"M1": m1.iloc[max(0, i - 400):i + 1]}
-                for tf in TFS:
-                    if tf == "M1":
-                        continue
-                    k = int(ends[tf].searchsorted(pd.Timestamp(now), side="right"))
-                    window[tf] = frames[tf].iloc[max(0, k - 400):k]
+                window = {"M1": m1c[max(0, i - 400):i + 1]}
+                for tf, endlist in ends.items():
+                    k = bisect.bisect_right(endlist, now_ts)
+                    window[tf] = candles[tf][max(0, k - 400):k]
                 session = session_for(now)
                 decision = self.engine.evaluate(window, now, spread=self.spec.spread_price)
-                ev_f.write(json.dumps({"t": now.isoformat(), "action": decision.get("action"),
+                buf.append(json.dumps({"t": now.isoformat(), "action": decision.get("action"),
                                        "reason": decision.get("reason"), "code": decision.get("code"),
                                        "setup_id": decision.get("setup_id"), "session": session}, default=str) + "\n")
+                if len(buf) >= 250:
+                    ev_f.writelines(buf)
+                    buf.clear()
                 gate = self.gate.check(now) if self.gate else {"blocked": False}
                 opened = None
                 if self.book.layers:
@@ -140,43 +154,41 @@ class Backtest:
                         })
                         self._path[opened.id] = {"mfe": 0.0, "mae": 0.0}
                 snap = self.book.snapshot(close)
-                self.equity_curve.append({"time": now.isoformat(), "equity": snap["equity"], "balance": snap["balance"]})
-                if opened or decision.get("fire") or i % 50 == 0:
-                    self.bars.append({"i": i, "time": now.isoformat(), "c": close, "session": session,
-                                      "fire": bool(decision.get("fire")), "setup_id": decision.get("setup_id"),
-                                      "equity": snap["equity"]})
-                self.progress = (i - warm + 1) / max(1, n - warm)
+                if opened or i % 30 == 0:
+                    self.equity_curve.append({"time": now.isoformat(), "equity": snap["equity"], "balance": snap["balance"]})
+                self.processed_m1 = i - warm + 1
+                self.current_ts = now.isoformat()
+                self.progress = self.processed_m1 / max(1, self.total_m1)
                 if on_progress and i % 400 == 0:
                     on_progress(self.progress)
         finally:
+            if buf:
+                ev_f.writelines(buf)
             ev_f.close()
-        if len(m1):
-            last = m1.iloc[-1]
-            end_ts = (last["time"] + pd.Timedelta(minutes=1)).to_pydatetime()
+        if m1c:
+            last = m1c[-1]
+            end_ts = pd.Timestamp(int(last["ts"]) + 60, unit="s", tz="UTC").to_pydatetime()
             for layer in list(self.book.layers):
                 rec = self.book.close_layer(layer, float(last["close"]), "END_OF_DATA", end_ts)
                 self._stamp(rec, end_ts)
+        self.runtime_sec = round(time.time() - t0, 3)
         trades = self.book.closed
         fn = dict(self.engine.funnel)
+        bps = round(self.processed_m1 / self.runtime_sec, 1) if self.runtime_sec else None
         self.result = {
             "id": self.id, "status": "done", "created": utcnow().isoformat(),
-            "range": {"start": str(m1["time"].iloc[0]), "end": str(m1["time"].iloc[-1]), "m1_bars": int(n)},
+            "range": {"start": str(self.m1["time"].iloc[0]), "end": str(self.m1["time"].iloc[-1]), "m1_bars": int(n)},
             "config": {
-                "book": "Scalp V1 research",
-                "sl": "STRUCTURAL", "tp": "NONE",
-                "trail": False,
-                "start_balance": self.book.start_balance,
-                "spread": self.spec.spread_price, "slippage": self.slippage,
-                "fixed_lots": self.fixed_lots,
+                "book": "Scalp V1 research", "sl": "STRUCTURAL", "tp": "NONE", "trail": False,
+                "start_balance": self.book.start_balance, "spread": self.spec.spread_price,
+                "slippage": self.slippage, "fixed_lots": self.fixed_lots,
                 "params": dict(self.engine.cfg.__dict__),
-                "prev_day": "last completed D1 bar in UTC after MT5 offset",
             },
             "stats": summarize(trades, self.book.start_balance, self.equity_curve),
             "by_direction": breakdown(trades, "direction"),
             "by_session": breakdown(trades, "session"),
             "by_volatility": breakdown(trades, "vol_bucket"),
-            "funnel": fn,
-            "conversions": conversions(fn),
+            "funnel": fn, "conversions": conversions(fn),
             "reject_codes": dict(self.engine.stats.get("reject_codes") or {}),
             "reject_reasons": dict(self.engine.stats.get("reject_reasons") or {}),
             "trades": trades,
@@ -184,7 +196,10 @@ class Backtest:
             "final_balance": round(self.book.balance, 2),
             "scalp_v1": dict(self.engine.stats),
             "event_file": str(ev_path),
-            "event_lines": sum(1 for _ in open(ev_path, encoding="utf-8")),
+            "event_lines": self.processed_m1,
+            "runtime_sec": self.runtime_sec,
+            "m1_processed": self.processed_m1,
+            "m1_per_sec": bps,
         }
 
     def _stamp(self, rec: dict, now):
@@ -202,21 +217,13 @@ class Backtest:
         except Exception:
             hold = None
         rec.update({
-            "trade_id": lid,
-            "setup_id": meta.get("setup_id"),
-            "entry_timestamp": rec.get("timestamp"),
-            "exit_timestamp": rec.get("exit_time"),
-            "location_type": meta.get("location_type"),
-            "location_price": meta.get("location_price"),
-            "sweep_level": meta.get("sweep_level"),
-            "sweep_price": meta.get("sweep_price"),
-            "sweep_distance_atr": meta.get("sweep_distance_atr"),
-            "pullback_depth": meta.get("pullback_depth"),
-            "vwap": meta.get("vwap"),
-            "vol_bucket": meta.get("vol_bucket"),
-            "initial_structural_sl": sl0,
-            "final_sl": rec.get("sl"),
-            "risk_distance": risk,
+            "trade_id": lid, "setup_id": meta.get("setup_id"),
+            "entry_timestamp": rec.get("timestamp"), "exit_timestamp": rec.get("exit_time"),
+            "location_type": meta.get("location_type"), "location_price": meta.get("location_price"),
+            "sweep_level": meta.get("sweep_level"), "sweep_price": meta.get("sweep_price"),
+            "sweep_distance_atr": meta.get("sweep_distance_atr"), "pullback_depth": meta.get("pullback_depth"),
+            "vwap": meta.get("vwap"), "vol_bucket": meta.get("vol_bucket"),
+            "initial_structural_sl": sl0, "final_sl": rec.get("sl"), "risk_distance": risk,
             "mfe": round(mfe, 4), "mae": round(mae, 4),
             "mfe_r": round(mfe / risk, 4), "mae_r": round(mae / risk, 4),
             "holding_time_seconds": hold,
