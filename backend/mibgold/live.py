@@ -1,4 +1,4 @@
-"""Live loop. C-Fast V2.1 with Lab trail (activate +1R)."""
+"""Live loop. C-Fast early hunt + M5 tape (trend/RSI/MACD/volume)."""
 from __future__ import annotations
 import asyncio
 import logging
@@ -20,6 +20,7 @@ from .trailing import TrailingTP
 from .bars_cache import load_m1, merge_live, upsert_m1
 from .hunt.hunt_c_fast import frames_to_candles
 from .hunt.cfast_v2 import CFastV2
+from .hunt.tape import tape_ok
 
 log = logging.getLogger("mibgold.live")
 TFS = ("M5", "M15", "H1", "H4", "D1")
@@ -199,9 +200,15 @@ class LiveEngine:
         elif hunt.get("action") == "FIRE" and self.tick:
             direction = (hunt.get("direction") or "").lower()
             level = float(hunt.get("entry") or 0)
+            tape_pass, tape_why = tape_ok(direction, self.analysis.get("votes") or {}, self.frames.get("M5"))
+            self.analysis["tape"] = tape_why
             live_px = float(self.tick.ask if direction == "long" else self.tick.bid)
             band = max(0.40, float(hunt.get("atr_15m") or 0) * 0.25)
-            if abs(live_px - level) > band:
+            if not tape_pass:
+                blocked = tape_why
+                self._log(tape_why)
+                self.cfast.active = None
+            elif abs(live_px - level) > band:
                 blocked = f"live {live_px:.2f} left 15m level {level:.2f} (band {band:.2f}) - no chase"
                 self._log(blocked)
                 self.cfast.active = None
@@ -219,12 +226,12 @@ class LiveEngine:
                     sl, tp = self.cfast.apply_fixed_rr(fill, sl_dist, direction)
                     risk_usd = lots * sl_dist * self.spec.contract_size
                     opened = self.book.open_layer(direction, fill, sl, lots, risk_usd, now,
-                                                  {}, {"direction": direction}, "C-Fast V2.1",
+                                                  {}, {"direction": direction}, "C-Fast EARLY+TAPE",
                                                   self.analysis.get("session"), self.analysis.get("bias") or {},
                                                   ticket=order.get("ticket"), tp=tp)
                     self.brain.open_thesis(opened, self.analysis)
                     rec = self.book.open_records(self.tick.mid)[-1]
-                    self._log(f"OPEN {hunt.get('setup_id')} {direction} {lots} @ LVL {level:.2f} FILL {fill:.2f} SL {sl:.2f} TP {tp:.2f} RR=1:3 TRAIL")
+                    self._log(f"OPEN {hunt.get('setup_id')} {direction} {lots} @ LVL {level:.2f} FILL {fill:.2f} SL {sl:.2f} TP {tp:.2f} {tape_why}")
                     await self.broadcast({"type": "trade_opened", "trade": rec, "thesis": self.brain.theses[opened.id].to_dict()})
                 else:
                     self.cfast.active = None
