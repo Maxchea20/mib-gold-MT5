@@ -1,4 +1,4 @@
-"""Live loop. C-Fast V2.1. Enter at live bid/ask when price tags the 15m level."""
+"""Live loop. C-Fast V2.1 Lab door: closed 5m tap / slot-3, fill at 15m level."""
 from __future__ import annotations
 import asyncio
 import logging
@@ -63,7 +63,6 @@ class LiveEngine:
         self.day: Optional[datetime.date] = None
         self.events: list = []
         self.started = False
-        self._last_fire_try: Optional[datetime] = None
 
     def _symbol(self) -> str:
         return getattr(self.adapter, "symbol", None) or self.spec.symbol
@@ -83,8 +82,7 @@ class LiveEngine:
         cut = pd.Timestamp(now.replace(second=0, microsecond=0))
         if cut.tzinfo is None:
             cut = cut.tz_localize("UTC")
-        # keep forming M5 so a live tap can fire before the candle closes
-        self.frames = {tf: completed_only(df, tf, cut) if tf not in ("M1", "M5") else df for tf, df in frames.items()}
+        self.frames = {tf: completed_only(df, tf, cut) if tf != "M1" else df for tf, df in frames.items()}
         if len(self.frames.get("M5", [])) > 20:
             self.m5_atr = safe_atr(self.frames["M5"].tail(60))
 
@@ -141,8 +139,6 @@ class LiveEngine:
         minute = now.replace(second=0, microsecond=0)
         if self.last_minute is None or minute > self.last_minute:
             await self._on_minute(minute, now)
-        elif not self.book.layers:
-            await self._try_live_fire(now)
         for rec in self.book.on_bar(tick.ask, tick.bid, tick.mid, self.m5_atr, now):
             await self._closed(rec)
         await self.broadcast(self._tick_payload())
@@ -153,22 +149,12 @@ class LiveEngine:
         self.gate_state = self.gate.check(now)
         await self.interpreter.poll(now)
         self.rebuild_frames(minute)
-        await self._try_live_fire(now)
+        await self._decide(now)
         await self.broadcast({"type": "bars", "bars": {tf: self.chart(tf, 2) for tf in TFS}, "news": self.gate_state})
-
-    def _paint_tick_on_m5(self, candles: list) -> list:
-        if not candles or not self.tick:
-            return candles
-        last = dict(candles[-1])
-        px = float(self.tick.mid)
-        last["high"] = max(float(last.get("high", px)), float(self.tick.ask), px)
-        last["low"] = min(float(last.get("low", px)), float(self.tick.bid), px)
-        last["close"] = px
-        return candles[:-1] + [last]
 
     def _run_hunt(self):
         c15 = frames_to_candles(self.frames.get("M15"))
-        c5 = self._paint_tick_on_m5(frames_to_candles(self.frames.get("M5")))
+        c5 = frames_to_candles(self.frames.get("M5"))
         c1 = frames_to_candles(self.frames.get("H1"))
         c4 = frames_to_candles(self.frames.get("H4"))
         if not c15 or not c5:
@@ -177,7 +163,7 @@ class LiveEngine:
         live = [b for b in c5 if b["ts"] >= parent]
         return self.cfast.evaluate(c15, c5[-1], live_5ms=live or [c5[-1]], candles_4h=c4, candles_1h=c1, candles_5m=c5)
 
-    async def _try_live_fire(self, now: datetime):
+    async def _decide(self, now: datetime):
         self.analysis = self.strategy.analyze(self.frames, now, self.spec, self.interpreter.current(now))
         hunt = self._run_hunt()
         self.analysis["hunt"] = hunt
@@ -199,10 +185,16 @@ class LiveEngine:
             blocked = "Auto-trade paused by operator"
         elif hunt.get("action") == "FIRE" and self.tick:
             direction = (hunt.get("direction") or "").lower()
-            if direction in ("long", "short"):
-                live_px = float(self.tick.ask if direction == "long" else self.tick.bid)
+            level = float(hunt.get("entry") or 0)
+            live_px = float(self.tick.ask if direction == "long" else self.tick.bid)
+            band = max(0.40, float(hunt.get("atr_15m") or 0) * 0.25)
+            if abs(live_px - level) > band:
+                blocked = f"live {live_px:.2f} left 15m level {level:.2f} (band {band:.2f}) - no chase"
+                self._log(blocked)
+                self.cfast.active = None
+            elif direction in ("long", "short") and level:
                 sl_dist = float(self.sl_dollars)
-                sl, tp = self.cfast.apply_fixed_rr(live_px, sl_dist, direction)
+                sl, tp = self.cfast.apply_fixed_rr(level, sl_dist, direction)
                 lots = self.fixed_lots
                 try:
                     order = self.adapter.place_order(direction, lots, sl, tp=tp)
@@ -210,7 +202,7 @@ class LiveEngine:
                     order = {"ok": False, "comment": str(e)}
                     self.cfast.active = None
                 if order.get("ok"):
-                    fill = float(order.get("price") or live_px)
+                    fill = float(order.get("price") or level)
                     sl, tp = self.cfast.apply_fixed_rr(fill, sl_dist, direction)
                     risk_usd = lots * sl_dist * self.spec.contract_size
                     opened = self.book.open_layer(direction, fill, sl, lots, risk_usd, now,
@@ -219,7 +211,7 @@ class LiveEngine:
                                                   ticket=order.get("ticket"), tp=tp)
                     self.brain.open_thesis(opened, self.analysis)
                     rec = self.book.open_records(self.tick.mid)[-1]
-                    self._log(f"OPEN {hunt.get('setup_id')} {direction} {lots} @ LIVE {fill:.2f} SL {sl:.2f} TP {tp:.2f} RR=1:3")
+                    self._log(f"OPEN {hunt.get('setup_id')} {direction} {lots} @ LVL {level:.2f} FILL {fill:.2f} SL {sl:.2f} TP {tp:.2f} RR=1:3")
                     await self.broadcast({"type": "trade_opened", "trade": rec, "thesis": self.brain.theses[opened.id].to_dict()})
                 else:
                     self.cfast.active = None
