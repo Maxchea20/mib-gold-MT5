@@ -1,4 +1,4 @@
-"""Live loop. C-Fast early hunt + M5 tape (trend/RSI/MACD/volume)."""
+"""Live loop. M5 continuation + tape. C-Fast is not the fire door."""
 from __future__ import annotations
 import asyncio
 import logging
@@ -21,6 +21,7 @@ from .bars_cache import load_m1, merge_live, upsert_m1
 from .hunt.hunt_c_fast import frames_to_candles
 from .hunt.cfast_v2 import CFastV2
 from .hunt.tape import tape_ok
+from .hunt.continuation import evaluate_continuation
 
 log = logging.getLogger("mibgold.live")
 TFS = ("M5", "M15", "H1", "H4", "D1")
@@ -167,15 +168,12 @@ class LiveEngine:
         await self.broadcast({"type": "bars", "bars": {tf: self.chart(tf, 2) for tf in TFS}, "news": self.gate_state})
 
     def _run_hunt(self):
-        c15 = frames_to_candles(self.frames.get("M15"))
         c5 = frames_to_candles(self.frames.get("M5"))
         c1 = frames_to_candles(self.frames.get("H1"))
         c4 = frames_to_candles(self.frames.get("H4"))
-        if not c15 or not c5:
-            return {"action": "WAIT", "why_state": ["C-Fast V2.1 needs M15/M5"]}
-        parent = c5[-1]["ts"] - (c5[-1]["ts"] % 900)
-        live = [b for b in c5 if b["ts"] >= parent]
-        return self.cfast.evaluate(c15, c5[-1], live_5ms=live or [c5[-1]], candles_4h=c4, candles_1h=c1, candles_5m=c5)
+        if not c5:
+            return {"action": "WAIT", "why_state": ["M5 continuation needs M5 bars"]}
+        return evaluate_continuation(c5, candles_1h=c1, candles_4h=c4)
 
     async def _decide(self, now: datetime):
         self.analysis = self.strategy.analyze(self.frames, now, self.spec, self.interpreter.current(now))
@@ -184,7 +182,7 @@ class LiveEngine:
         if hunt.get("action") == "FIRE":
             self.analysis["fire"] = True
             self.analysis["gate_reason"] = None
-            self.analysis["summary"] = " | ".join(hunt.get("why_state") or ["C-Fast V2.1"])
+            self.analysis["summary"] = " | ".join(hunt.get("why_state") or ["M5 continuation"])
             self.analysis.setdefault("bias", {})["direction"] = hunt.get("direction")
         else:
             self.analysis["fire"] = False
@@ -203,15 +201,13 @@ class LiveEngine:
             tape_pass, tape_why = tape_ok(direction, self.analysis.get("votes") or {}, self.frames.get("M5"))
             self.analysis["tape"] = tape_why
             live_px = float(self.tick.ask if direction == "long" else self.tick.bid)
-            band = max(0.40, float(hunt.get("atr_15m") or 0) * 0.25)
+            band = max(0.80, float(hunt.get("atr_5m") or hunt.get("atr_15m") or 1.0) * 0.35)
             if not tape_pass:
                 blocked = tape_why
                 self._log(tape_why)
-                self.cfast.active = None
             elif abs(live_px - level) > band:
-                blocked = f"live {live_px:.2f} left 15m level {level:.2f} (band {band:.2f}) - no chase"
+                blocked = f"live {live_px:.2f} left M5 {hunt.get('event')} {level:.2f} (band {band:.2f}) - no chase"
                 self._log(blocked)
-                self.cfast.active = None
             elif direction in ("long", "short") and level:
                 sl_dist = float(self.sl_dollars)
                 sl, tp = self.cfast.apply_fixed_rr(level, sl_dist, direction)
@@ -220,25 +216,23 @@ class LiveEngine:
                     order = self.adapter.place_order(direction, lots, sl, tp=tp)
                 except Exception as e:
                     order = {"ok": False, "comment": str(e)}
-                    self.cfast.active = None
                 if order.get("ok"):
                     fill = float(order.get("price") or level)
                     sl, tp = self.cfast.apply_fixed_rr(fill, sl_dist, direction)
                     risk_usd = lots * sl_dist * self.spec.contract_size
                     opened = self.book.open_layer(direction, fill, sl, lots, risk_usd, now,
-                                                  {}, {"direction": direction}, "C-Fast EARLY+TAPE",
+                                                  {}, {"direction": direction}, "M5 continuation",
                                                   self.analysis.get("session"), self.analysis.get("bias") or {},
                                                   ticket=order.get("ticket"), tp=tp)
                     self.brain.open_thesis(opened, self.analysis)
                     rec = self.book.open_records(self.tick.mid)[-1]
-                    self._log(f"OPEN {hunt.get('setup_id')} {direction} {lots} @ LVL {level:.2f} FILL {fill:.2f} SL {sl:.2f} TP {tp:.2f} {tape_why}")
+                    self._log(f"OPEN {hunt.get('event')} {direction} {lots} @ LVL {level:.2f} FILL {fill:.2f} SL {sl:.2f} TP {tp:.2f} {tape_why}")
                     await self.broadcast({"type": "trade_opened", "trade": rec, "thesis": self.brain.theses[opened.id].to_dict()})
                 else:
-                    self.cfast.active = None
                     blocked = f"Order rejected: {order}"
                     self._log(blocked)
             else:
-                blocked = (hunt.get("why_state") or ["no C-Fast setup"])[0]
+                blocked = (hunt.get("why_state") or ["no continuation"])[0]
         self.analysis["gate_reason"] = blocked
         self.analysis["executed"] = opened.id if opened else None
         await self.broadcast({"type": "analysis", "analysis": self.analysis,
@@ -246,8 +240,6 @@ class LiveEngine:
 
     async def _closed(self, rec: dict):
         self.last_exit_at = self.tick.time if self.tick else datetime.utcnow()
-        ts = int(self.last_exit_at.timestamp()) if self.last_exit_at else 0
-        self.cfast.on_exit(rec, ts)
         self.brain.close(rec.get("id"), self.last_exit_at, rec.get("exit_reason", ""))
         self._log(f"CLOSE L{rec.get('layer_number')} {rec.get('direction')} {rec.get('exit_reason')} @ {rec.get('exit_price')}")
         await self.persist(rec)
