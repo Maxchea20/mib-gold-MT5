@@ -144,19 +144,11 @@ export default function PriceChart({ layers = [], barUpdates, tick, title = "XAU
     const s = seriesRef.current; if (!s) return;
     linesRef.current.forEach((l) => s.removePriceLine(l)); linesRef.current = [];
     const extra = [];
-    const hunt = analysis?.hunt || {};
-    const lvl = hunt.entry || hunt.hunt?.level;
-    if (lvl) {
-      linesRef.current.push(s.createPriceLine({
-        price: Number(lvl), color: "#eab308", lineWidth: 1, lineStyle: 2,
-        title: `HUNT ${hunt.event || ""} ${Number(lvl).toFixed(2)}`,
-      }));
-    }
     layers.forEach((l) => {
       const c = l.direction === "long" ? "#10b981" : "#ef4444";
       linesRef.current.push(s.createPriceLine({ price: l.entry, color: c, lineWidth: 1, lineStyle: 0, title: `L${l.layer_number} ${l.direction.toUpperCase()} ${l.lots}` }));
       linesRef.current.push(s.createPriceLine({ price: l.sl, color: "#f97316", lineWidth: 1, lineStyle: 2, title: `L${l.layer_number} SL` }));
-      if (l.trail_level) linesRef.current.push(s.createPriceLine({ price: l.trail_level, color: "#06b6d4", lineWidth: 1, lineStyle: 3, title: `L${l.layer_number} trail TP` }));
+      if (l.tp) linesRef.current.push(s.createPriceLine({ price: l.tp, color: "#22c55e", lineWidth: 1, lineStyle: 2, title: `L${l.layer_number} TP` }));
       const t = Math.floor(new Date(l.timestamp).getTime() / 1000);
       const secs = SECS[tf];
       extra.push({ time: Math.floor(t / secs) * secs, position: l.direction === "long" ? "belowBar" : "aboveBar", color: c, shape: l.direction === "long" ? "arrowUp" : "arrowDown", text: `L${l.layer_number}` });
