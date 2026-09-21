@@ -26,7 +26,10 @@ class PositionBook:
                    votes: dict, consensus: dict, summary: str, session: str, bias: dict, ticket=None, tp=None) -> Layer:
         group = self.group_for(direction)
         gid = group[0].group_id if group else new_id("G")
-        # Scale-in (L2+) banks at L1's TP, not a fresh target from a worse fill.
+        if tp is None and isinstance(consensus, dict):
+            tp = consensus.get("tp")
+        if tp is None and isinstance(votes, dict):
+            tp = votes.get("tp")
         if group and group[0].tp is not None:
             tp = group[0].tp
         layer = Layer(id=new_id("L"), group_id=gid, layer_number=len(group) + 1, direction=direction,
@@ -49,10 +52,10 @@ class PositionBook:
         for layer in list(self.layers):
             if layer.tp is not None:
                 if layer.sign > 0 and high >= layer.tp:
-                    closed.append(self.close_layer(layer, layer.tp, "TP", ts))
+                    closed.append(self.close_layer(layer, layer.tp, "STRUCTURE_TP", ts))
                     continue
                 if layer.sign < 0 and low <= layer.tp:
-                    closed.append(self.close_layer(layer, layer.tp, "TP", ts))
+                    closed.append(self.close_layer(layer, layer.tp, "STRUCTURE_TP", ts))
                     continue
             hit = self.trailing.check_exit(layer, high, low)
             if hit:
