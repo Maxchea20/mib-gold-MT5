@@ -178,6 +178,7 @@ class Backtest:
                             self._meta[opened.id].update({
                                 "setup_id": decision.get("setup_id"), "vol_bucket": decision.get("vol_bucket"),
                                 "vwap": decision.get("vwap"), "session": session, "in_test": True,
+                                "market_regime": decision.get("market_regime") or (decision.get("meta") or {}).get("market_regime"),
                             })
                             self._path[opened.id] = {"mfe": 0.0, "mae": 0.0}
                 snap = self.book.snapshot(close)
@@ -270,6 +271,7 @@ class Backtest:
             "entry_timestamp": rec.get("timestamp"), "exit_timestamp": rec.get("exit_time"),
             "location_type": meta.get("location_type"), "location_price": meta.get("location_price"),
             "vwap": meta.get("vwap"), "vol_bucket": meta.get("vol_bucket"),
+            "market_regime": meta.get("market_regime"),
             "initial_structural_sl": sl0, "final_sl": rec.get("sl"), "risk_distance": risk,
             "mfe": round(mfe, 4), "mae": round(mae, 4),
             "mfe_r": round(mfe / risk, 4), "mae_r": round(mae / risk, 4),
