@@ -19,7 +19,7 @@ export const BACKEND_URL = resolveBackend();
 export const API = `${BACKEND_URL}/api`;
 export const WS_URL = BACKEND_URL.replace(/^http/, "ws") + "/api/ws";
 
-const http = axios.create({ baseURL: API, timeout: 30000 });
+const http = axios.create({ baseURL: API, timeout: 20000 });
 const longHttp = axios.create({ baseURL: API, timeout: 180000 });
 
 export const api = {
@@ -38,9 +38,9 @@ export const api = {
   events: () => http.get("/events").then((r) => r.data),
   addManualNews: (ev) => http.post("/news/manual", ev).then((r) => r.data),
   interpretNews: (ev) => http.post("/news/interpret", ev).then((r) => r.data),
-  runBacktest: (body) => longHttp.post("/backtest/run", body).then((r) => r.data),
+  runBacktest: (body) => http.post("/backtest/run", body).then((r) => r.data),
   backtests: () => http.get("/backtest").then((r) => r.data),
-  backtest: (id) => longHttp.get(`/backtest/${id}`).then((r) => r.data),
+  backtest: (id) => http.get(`/backtest/${id}`).then((r) => r.data),
   backtestTrades: (id) => longHttp.get(`/backtest/${id}/trades`).then((r) => r.data),
   backtestBars: (id, start, count) => http.get(`/backtest/${id}/bars`, { params: { start, count } }).then((r) => r.data),
   exportBacktest: (id, fmt) => http.get(`/backtest/${id}/export`, { params: { fmt } }).then((r) => r.data),
