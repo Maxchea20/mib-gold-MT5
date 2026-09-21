@@ -1,8 +1,10 @@
 """Hunt H2: 15M level, 5M tag arm, M1-close fire, SL past 5M wick, TP next opposing 15M."""
 from __future__ import annotations
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Callable, Dict, List, Optional
 from . import core
+from . import hunt_tp_bind
 
 
 @dataclass
@@ -38,6 +40,7 @@ class HuntEngine:
             "bos_5m_detected": 0, "pullbacks_detected": 0, "continuations_detected": 0,
             "spread_passed": 0, "fires": 0,
         }
+        hunt_tp_bind.bind()
 
     def _reject(self, reason: str, code: str = "OTHER") -> Dict:
         self.stats["rejected"] += 1
@@ -50,7 +53,6 @@ class HuntEngine:
         hi, lo = core.swings(m15, k)
         res = hi[-1]["high"] if hi else None
         sup = lo[-1]["low"] if lo else None
-        # next opposing: previous swing the other way
         next_sup = lo[-2]["low"] if len(lo) >= 2 else (lo[-1]["low"] if lo else None)
         next_res = hi[-2]["high"] if len(hi) >= 2 else (hi[-1]["high"] if hi else None)
         return res, sup, next_res, next_sup
@@ -70,7 +72,6 @@ class HuntEngine:
         if atr1 <= 0:
             return self._reject("ATR not ready", "NO_ATR")
 
-        # ARM on completed 5M tag of 15M level, close back
         if res is not None and last5["high"] >= res and last5["close"] < res:
             self.arm = {"side": "short", "level": res, "wick": last5["high"], "tp": next_sup, "ts": last5["ts"]}
             self.funnel["sweeps_detected"] += 1
@@ -111,12 +112,13 @@ class HuntEngine:
         if tp is None or (side == "long" and tp <= entry) or (side == "short" and tp >= entry):
             return self._reject("No opposing 15M target", "NO_TP")
 
+        hunt_tp_bind.LAST_TP = float(tp)
         self.funnel["fires"] += 1
         self.stats["fired"] += 1
         self.seq += 1
         self.last_fire_ts = last1["ts"]
         sid = f"H2-{side[0].upper()}-{last1['ts']}-{self.seq}"
-        hour = __import__("datetime").datetime.utcfromtimestamp(last1["ts"]).hour
+        hour = datetime.utcfromtimestamp(last1["ts"]).hour
         self.arm = None
         return {
             "action": "FIRE", "fire": True, "direction": side, "entry": entry, "stop": sl, "tp": tp,
@@ -130,10 +132,13 @@ class HuntEngine:
 
     def on_open(self, setup, fill, sl, ts):
         self.thesis = setup
+        if setup.get("tp") is not None:
+            hunt_tp_bind.LAST_TP = float(setup["tp"])
 
     def on_exit(self, rec, ts=0):
         self.stats["exits"] += 1
         self.thesis = None
+        hunt_tp_bind.LAST_TP = None
 
     def manage(self, bar, atr1=0):
         return {"action": "HOLD"}
