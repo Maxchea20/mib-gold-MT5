@@ -9,6 +9,10 @@ export default function AgentBoard({ analysis, theses = [], book }) {
   const follow = (th?.followups || []).slice(-12).reverse();
   const state = fire ? "FIRE" : "WAIT";
   const setupState = hunt.structure_state || (fire ? "FIRED" : "WAITING");
+  const sl = book?.sl ?? 2.5;
+  const tp = book?.tp ?? 5;
+  const lot = book?.lot ?? 0.01;
+  const ver = book?.version || "HUNT_PULLBACK_2.5_5";
 
   return (
     <div className="flex flex-col h-full min-h-0 bg-[var(--surface)]" data-testid="agent-board-container">
@@ -16,12 +20,12 @@ export default function AgentBoard({ analysis, theses = [], book }) {
         <Cell k="15m" v={hunt.event || "-"} />
         <Cell k="4h wx" v={hunt.weather_flag || hunt.hunt?.weather || "-"} />
         <Cell k="setup" v={setupState} />
-        <Cell k="RR" v={hunt.rr || "1:3"} gold />
+        <Cell k="RR" v={hunt.rr || "2.5:5"} gold />
       </div>
 
       <div className="px-3 py-2 border-b border-[var(--hair)] flex items-center justify-between">
         <div className="mono text-[10px] tracking-[.12em] uppercase text-mute">
-          C-Fast V2.1 - L{book?.layers ?? 1} - {book?.lot ?? 0.02} - SL {book?.sl ?? 1} / TP {book?.tp ?? 3}
+          Hunt pullback - L{book?.layers ?? 1} - {lot} - SL {sl} / TP {tp} - {ver}
         </div>
         <div className="mono text-[10px] text-mute">
           {analysis?.time ? new Date(analysis.time).toISOString().slice(11, 16) + "Z" : ""}
@@ -39,8 +43,8 @@ export default function AgentBoard({ analysis, theses = [], book }) {
           <span className={`badge ${dir}`}>{dir === "long" || dir === "short" ? dir.toUpperCase() : "FLAT"}</span>
         </div>
         <div className="mt-2 grid grid-cols-3 gap-2 mono text-[10px]">
-          <Meta k="setup id" v={hunt.setup_id || "-"} />
-          <Meta k="origin" v={shortKey(hunt.structure_key || hunt.structure_id)} />
+          <Meta k="setup id" v={hunt.setup_id || hunt.event || "-"} />
+          <Meta k="path" v={hunt.hunt?.m5_path || hunt.m5_path || "-"} />
           <Meta k="session" v={SESSION_LABEL[analysis?.session] || analysis?.session || "-"} />
         </div>
         {fire && (
@@ -56,7 +60,7 @@ export default function AgentBoard({ analysis, theses = [], book }) {
         <div className="text-[9px] uppercase tracking-[.16em] text-mute mb-1">Open clip</div>
         {th ? (
           <>
-            <div className="text-[12px] leading-snug">{th.plan || "C-Fast V2.1 clip live."}</div>
+            <div className="text-[12px] leading-snug">{th.plan || "Hunt pullback clip live."}</div>
             <div className="mt-1.5 flex flex-wrap gap-2 mono text-[10px] text-dim">
               <span className={`badge ${th.direction}`}>{th.direction}</span>
               <span>@{th.entry}</span>
@@ -66,7 +70,7 @@ export default function AgentBoard({ analysis, theses = [], book }) {
           </>
         ) : (
           <div className="text-[11px] text-mute leading-snug">
-            Flat. Next fire needs a new C-Fast setup (failed IDs stay dead).
+            Flat. Waiting M5 pullback to the 15m FVG / broken level. No chase.
           </div>
         )}
       </div>
@@ -108,10 +112,4 @@ function Meta({ k, v }) {
 function num(n) {
   if (n == null || Number.isNaN(Number(n))) return "-";
   return Number(n).toFixed(2);
-}
-
-function shortKey(k) {
-  if (!k) return "-";
-  const s = String(k);
-  return s.length > 22 ? s.slice(0, 20) + ".." : s;
 }
