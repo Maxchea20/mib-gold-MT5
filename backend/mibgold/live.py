@@ -1,4 +1,4 @@
-"""Live: Hunt C + C-Fast V2.1 keys. Gold collar SL 2.5 / TP 7.5. No trail."""
+"""Live: Hunt C + C-Fast V2.1 keys. Gold collar SL 2.5 / TP 5. No trail."""
 from __future__ import annotations
 import asyncio
 import logging
@@ -44,7 +44,7 @@ class LiveEngine:
                                  mode="live" if adapter.name == "mt5" else "paper")
         self.fixed_lots = float(os.environ.get("FIXED_LOTS", "0.01"))
         self.sl_dollars = float(os.environ.get("SL_DOLLARS", "2.5"))
-        self.tp_dollars = float(os.environ.get("TP_DOLLARS", "7.5"))
+        self.tp_dollars = float(os.environ.get("TP_DOLLARS", "5.0"))
         self.brain = TradeBrain(dead_min=float(os.environ.get("DEAD_FILL_MIN", "2")),
                                 dead_r=float(os.environ.get("DEAD_FILL_R", "0.15")))
         self.cfast = CFastV2(log=lambda m: self._log(m))
