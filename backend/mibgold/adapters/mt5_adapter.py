@@ -1,5 +1,6 @@
 """Real MetaTrader5 adapter (Windows only)."""
 from __future__ import annotations
+import logging
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -8,6 +9,7 @@ import pandas as pd
 from .base import DataAdapter, Tick
 from ..risk import SymbolSpec
 
+log = logging.getLogger("mibgold.mt5")
 ORDER_COMMENT = "mib-gold"
 
 
@@ -15,8 +17,7 @@ def _mt5_path() -> Optional[str]:
     raw = (os.environ.get("MT5_PATH") or "").strip().strip('"').strip("'")
     if not raw:
         return None
-    raw = raw.replace("\\", "/")
-    p = Path(raw)
+    p = Path(raw.replace("\\", "/"))
     if p.is_file():
         return str(p)
     for g in (
@@ -51,9 +52,8 @@ class MT5Adapter(DataAdapter):
         if not self.mt5.symbol_select(self.symbol, True):
             raise RuntimeError(f"symbol_select({self.symbol}) failed: {self.mt5.last_error()}")
         info = self.mt5.terminal_info()._asdict()
-        acc = self.account()
         return {"connected": True, "mode": "mt5", "terminal": info.get("name"), "build": info.get("build"),
-                "account": acc, "symbol": self.symbol_spec().to_dict()}
+                "account": self.account(), "symbol": self.symbol_spec().to_dict()}
 
     def symbol_spec(self) -> SymbolSpec:
         if self._spec is None:
@@ -102,27 +102,47 @@ class MT5Adapter(DataAdapter):
         rates = self.mt5.copy_rates_range(self.symbol, self.mt5.TIMEFRAME_M1, start + self.server_offset, end + self.server_offset)
         return self._frame(rates)
 
-    def place_order(self, direction: str, lots: float, sl: float, comment: str = ORDER_COMMENT) -> dict:
+    def place_order(self, direction: str, lots: float, sl: float, comment: str = ORDER_COMMENT, tp: float = 0.0) -> dict:
         mt5 = self.mt5
         tick = mt5.symbol_info_tick(self.symbol)
         if tick is None:
-            return {"ok": False, "comment": "no tick"}
-        buy = direction == "long"
-        price = tick.ask if buy else tick.bid
+            return {"ok": False, "comment": "no tick", "retcode": None}
+        buy = (direction or "").lower() in ("long", "buy")
+        price = float(tick.ask if buy else tick.bid)
         sl_dist = float(os.environ.get("SL_DOLLARS", "1.0"))
         if sl is None:
             sl = price - sl_dist if buy else price + sl_dist
-        req = {
-            "action": mt5.TRADE_ACTION_DEAL, "symbol": self.symbol, "volume": float(lots),
-            "type": mt5.ORDER_TYPE_BUY if buy else mt5.ORDER_TYPE_SELL,
-            "price": price, "sl": float(sl), "tp": 0.0,
-            "deviation": int(os.environ.get("MT5_DEVIATION_POINTS", "30")), "magic": 20260601,
-            "comment": comment[:31], "type_time": mt5.ORDER_TIME_GTC, "type_filling": mt5.ORDER_FILLING_IOC,
-        }
-        r = mt5.order_send(req)
-        ok = r is not None and r.retcode == mt5.TRADE_RETCODE_DONE
-        return {"ok": ok, "ticket": getattr(r, "order", None), "price": getattr(r, "price", None),
-                "retcode": getattr(r, "retcode", None), "comment": getattr(r, "comment", None)}
+        sl = float(sl)
+        if not tp:
+            tp = price + sl_dist * 3.0 if buy else price - sl_dist * 3.0
+        tp = float(tp)
+        digits = self.symbol_spec().digits
+        sl, tp, price = round(sl, digits), round(tp, digits), round(price, digits)
+        fillings = [mt5.ORDER_FILLING_IOC, mt5.ORDER_FILLING_FOK, mt5.ORDER_FILLING_RETURN]
+        last = {"ok": False}
+        for filling in fillings:
+            req = {
+                "action": mt5.TRADE_ACTION_DEAL, "symbol": self.symbol, "volume": float(lots),
+                "type": mt5.ORDER_TYPE_BUY if buy else mt5.ORDER_TYPE_SELL,
+                "price": price, "sl": sl, "tp": tp,
+                "deviation": int(os.environ.get("MT5_DEVIATION_POINTS", "50")), "magic": 20260601,
+                "comment": (comment or ORDER_COMMENT)[:31], "type_time": mt5.ORDER_TIME_GTC,
+                "type_filling": filling,
+            }
+            r = mt5.order_send(req)
+            last = {
+                "ok": r is not None and r.retcode == mt5.TRADE_RETCODE_DONE,
+                "ticket": getattr(r, "order", None) or getattr(r, "deal", None),
+                "price": getattr(r, "price", None) or price,
+                "retcode": getattr(r, "retcode", None),
+                "comment": getattr(r, "comment", None),
+                "last_error": self.mt5.last_error(),
+                "sl": sl, "tp": tp,
+            }
+            log.info("order_send %s lots=%s sl=%s tp=%s filling=%s -> %s", direction, lots, sl, tp, filling, last)
+            if last["ok"]:
+                return last
+        return last
 
     def close_position(self, ticket, lots: float, direction: str) -> dict:
         mt5 = self.mt5
@@ -130,7 +150,7 @@ class MT5Adapter(DataAdapter):
         buy = direction == "long"
         req = {"action": mt5.TRADE_ACTION_DEAL, "symbol": self.symbol, "volume": float(lots), "position": int(ticket),
                "type": mt5.ORDER_TYPE_SELL if buy else mt5.ORDER_TYPE_BUY, "price": tick.bid if buy else tick.ask,
-               "deviation": 30, "magic": 20260601, "comment": "mib-gold close", "type_filling": mt5.ORDER_FILLING_IOC}
+               "deviation": 50, "magic": 20260601, "comment": "mib-gold close", "type_filling": mt5.ORDER_FILLING_IOC}
         r = mt5.order_send(req)
         return {"ok": r is not None and r.retcode == mt5.TRADE_RETCODE_DONE, "retcode": getattr(r, "retcode", None)}
 
