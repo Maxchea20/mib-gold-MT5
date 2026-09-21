@@ -70,8 +70,9 @@ class CFastV2:
         raw["brain_version"] = VERSION
         raw["rr"] = f"1:{int(RR)}"
         if raw.get("action") != "FIRE":
-            raw["setup_id"] = None
-            raw["structure_state"] = "WAITING"
+            raw["setup_id"] = (self.active or {}).get("setup_id")
+            raw["structure_state"] = "WAITING" if not self.active else "ACTIVE"
+            raw["structure_key"] = (self.active or {}).get("structure_key")
             return raw
 
         direction = (raw.get("direction") or "").lower()
@@ -81,11 +82,20 @@ class CFastV2:
         if key in self.failed_keys:
             self.stats["old_setup_blocked"] += 1
             raw["action"] = "WAIT"
-            why = f"OLD SETUP {key} FAILED — will not reuse"
+            why = f"OLD SETUP {key} FAILED - will not reuse"
             raw["why_state"] = [why]
             raw["blocking_reasons"] = [why]
             raw["structure_state"] = "FAILED"
             raw["structure_key"] = key
+            return raw
+
+        # Same identity already offered this cycle: do not mint a new id every minute
+        if self.active and self.active.get("structure_key") == key:
+            raw["action"] = "WAIT"
+            raw["why_state"] = [f"setup {self.active.get('setup_id')} already armed on {key}"]
+            raw["setup_id"] = self.active.get("setup_id")
+            raw["structure_key"] = key
+            raw["structure_state"] = "ACTIVE"
             return raw
 
         entry = float(raw["entry"])
