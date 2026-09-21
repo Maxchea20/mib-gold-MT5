@@ -1,4 +1,4 @@
-"""V1 research harness. Prebuilt candles. Same scalp.Engine rules."""
+"""Research harness. V1 or CONT-H1 via book=."""
 from __future__ import annotations
 import bisect
 import json
@@ -14,8 +14,8 @@ from ..contracts import new_id, utcnow
 from ..news.calendar import NewsGate
 from ..risk import RiskManager, SymbolSpec, ClampedAllocation
 from ..session import session_for
-from ..scalp import Engine, ScalpConfig
 from ..scalp.core import rows
+from .pick import make_engine
 from .research_stats import summarize, breakdown, conversions, realized
 
 TFS = ("M1", "M5", "M15", "H1", "H4", "D1")
@@ -46,13 +46,15 @@ class Backtest:
                  budget_pct: float = 0.10, slippage_points: float = 5.0, warmup_bars: int = 300,
                  news_gate: Optional[NewsGate] = None, weights=None, bias_min_score=None, struct_oppose_score=None,
                  session_thresholds=None, session_min_aligned=None, min_risk_usd: float = 10.0, max_risk_usd: float = 100.0,
-                 fixed_lots: Optional[float] = None, sl_dollars=None, tp_dollars=None, test_cutoff=None):
+                 fixed_lots: Optional[float] = None, sl_dollars=None, tp_dollars=None, test_cutoff=None,
+                 book: str = "scalp_v1"):
         self.m1, self.spec = m1, spec
         self.slippage = slippage_points * spec.point
         self.warmup = warmup_bars
         self.gate = news_gate
         self.fixed_lots = fixed_lots
         self.test_cutoff = _ts(test_cutoff) if test_cutoff is not None else None
+        self.book_key = book or "scalp_v1"
         risk = RiskManager(spec, budget_pct=budget_pct, max_layers=max_layers,
                            allocation=ClampedAllocation(min_usd=min_risk_usd, max_usd=max_risk_usd))
         self.book = PositionBook(spec, risk, StructuralOnly(), start_balance, mode="backtest")
@@ -64,7 +66,7 @@ class Backtest:
         self.equity_curve: list = []
         self.result: Optional[dict] = None
         self._stop = False
-        self.engine = Engine(ScalpConfig())
+        self.engine, self.book_label = make_engine(self.book_key)
         self._path = {}
         self._meta = {}
         self.processed_m1 = 0
@@ -116,7 +118,7 @@ class Backtest:
                     break
                 bar = m1c[i]
                 now_ts = int(bar["ts"] + 60)
-                now = pd.Timestamp(now_ts, unit="s", tz="UTC").tz_convert(None).to_pydatetime() if False else pd.Timestamp(now_ts, unit="s", tz="UTC").to_pydatetime()
+                now = pd.Timestamp(now_ts, unit="s", tz="UTC").to_pydatetime()
                 if first_eval is None:
                     first_eval = now
                 hi, lo, close = bar["high"], bar["low"], bar["close"]
@@ -169,7 +171,7 @@ class Backtest:
                         if lots > 0 and sl_dist > 0:
                             risk_usd = lots * sl_dist * self.spec.contract_size
                             opened = self.book.open_layer(direction, entry, sl, lots, risk_usd, now,
-                                                          {}, {"direction": direction}, decision.get("reason") or "SCALP_V1",
+                                                          {}, {"direction": direction}, decision.get("reason") or self.book_label,
                                                           session, {"direction": direction}, tp=None)
                             self.engine.on_open(decision, entry, sl, now_ts)
                             self._meta[opened.id] = dict(decision.get("meta") or {})
@@ -212,6 +214,7 @@ class Backtest:
         for t in rz:
             first_test = t.get("timestamp") or t.get("entry_timestamp")
             break
+        params = dict(getattr(self.engine, "cfg", object()).__dict__) if hasattr(self.engine, "cfg") else {}
         self.result = {
             "id": self.id, "status": "done", "created": utcnow().isoformat(),
             "range": {"start": test_start, "end": loaded_end, "m1_bars": int(self.processed_m1)},
@@ -222,13 +225,12 @@ class Backtest:
                 "warmup_bars": warm, "first_evaluated_bar": str(first_eval),
                 "first_test_trade": first_test,
                 "warmup_fires": self.warmup_fires, "test_fires": self.test_fires,
-                "end_of_data": len(eod),
+                "end_of_data": len(eod), "book": self.book_label,
             },
             "config": {
-                "book": "Scalp V1 research", "sl": "STRUCTURAL", "tp": "NONE", "trail": False,
+                "book": self.book_label, "sl": "STRUCTURAL", "tp": "NONE", "trail": False,
                 "start_balance": self.book.start_balance, "spread": self.spec.spread_price,
-                "slippage": self.slippage, "fixed_lots": self.fixed_lots,
-                "params": dict(self.engine.cfg.__dict__),
+                "slippage": self.slippage, "fixed_lots": self.fixed_lots, "params": params,
             },
             "stats": summarize(trades, self.book.start_balance, self.equity_curve),
             "by_direction": breakdown(trades, "direction"),
@@ -242,7 +244,6 @@ class Backtest:
             "end_of_data_trades": eod,
             "equity_curve": self.equity_curve[::max(1, len(self.equity_curve) // 1500)],
             "final_balance": round(self.book.balance, 2),
-            "scalp_v1": dict(self.engine.stats),
             "event_file": str(ev_path),
             "event_lines": self.processed_m1,
             "runtime_sec": self.runtime_sec,
@@ -268,8 +269,6 @@ class Backtest:
             "trade_id": lid, "setup_id": meta.get("setup_id"),
             "entry_timestamp": rec.get("timestamp"), "exit_timestamp": rec.get("exit_time"),
             "location_type": meta.get("location_type"), "location_price": meta.get("location_price"),
-            "sweep_level": meta.get("sweep_level"), "sweep_price": meta.get("sweep_price"),
-            "sweep_distance_atr": meta.get("sweep_distance_atr"), "pullback_depth": meta.get("pullback_depth"),
             "vwap": meta.get("vwap"), "vol_bucket": meta.get("vol_bucket"),
             "initial_structural_sl": sl0, "final_sl": rec.get("sl"), "risk_distance": risk,
             "mfe": round(mfe, 4), "mae": round(mae, 4),
