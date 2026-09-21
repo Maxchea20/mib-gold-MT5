@@ -1,10 +1,10 @@
 """Hunt C for MIB Gold — same door as mib-trader-desktop Hunt C / C-fast.
 
-  15m CHoCH or first (non-extended) BOS arms
-  5m #3 close through prior 15m high/low, OR tap of the 15m level on #1/#2
+  15m CHoCH or first (non-extended) BOS arms the SIDE
+  glue follows the latest LL (short) or HH (long), not the first break
+  5m #3 close through prior 15m high/low, OR tap of the glued level on #1/#2
   4h weather must allow the side
-  fill at the 15m level
-  SL 1.5 ATR15 / TP 2.5 ATR15
+  fill at the glued level
 """
 from __future__ import annotations
 from typing import Dict, List, Optional
@@ -50,28 +50,48 @@ def _swings(rows: List[dict], k: int = 2):
     return highs, lows
 
 
+def _glue_level(side: Optional[str], highs: List[dict], lows: List[dict]) -> Optional[float]:
+    if side == SHORT and lows:
+        return float(lows[-1]["low"])
+    if side == LONG and highs:
+        return float(highs[-1]["high"])
+    return None
+
+
 def _structure(rows: List[dict]) -> Dict:
     highs, lows = _swings(rows)
+    empty = {"event": None, "side": None, "extended": False, "level": None}
     if len(highs) < 2 or len(lows) < 2:
-        return {"event": None, "side": None, "extended": False, "level": None}
+        return empty
     last_h, prev_h = highs[-1], highs[-2]
     last_l, prev_l = lows[-1], lows[-2]
     close = float(rows[-1]["close"])
-    bos_up = close > float(last_h["high"]) and float(last_h["high"]) > float(prev_h["high"])
-    bos_dn = close < float(last_l["low"]) and float(last_l["low"]) < float(prev_l["low"])
-    choch_up = close > float(last_h["high"]) and float(last_l["low"]) < float(prev_l["low"])
-    choch_dn = close < float(last_l["low"]) and float(last_h["high"]) > float(prev_h["high"])
+    last_hh = float(last_h["high"]) > float(prev_h["high"])
+    last_lh = float(last_h["high"]) < float(prev_h["high"])
+    last_ll = float(last_l["low"]) < float(prev_l["low"])
+    last_hl = float(last_l["low"]) > float(prev_l["low"])
+    bos_up = close > float(last_h["high"]) and last_hh
+    bos_dn = close < float(last_l["low"]) and last_ll
+    choch_up = close > float(last_h["high"]) and last_ll
+    choch_dn = close < float(last_l["low"]) and last_lh
     hh_count = sum(1 for a, b in zip(highs[-3:], highs[-2:]) if float(b["high"]) > float(a["high"]))
-    extended = hh_count >= 2 and bos_up
+    ll_count = sum(1 for a, b in zip(lows[-3:], lows[-2:]) if float(b["low"]) < float(a["low"]))
+    event = side = None
+    extended = False
     if choch_up:
-        return {"event": "CHoCH", "side": LONG, "extended": False, "level": float(last_h["high"])}
-    if choch_dn:
-        return {"event": "CHoCH", "side": SHORT, "extended": False, "level": float(last_l["low"])}
-    if bos_up:
-        return {"event": "BOS", "side": LONG, "extended": extended, "level": float(last_h["high"])}
-    if bos_dn:
-        return {"event": "BOS", "side": SHORT, "extended": False, "level": float(last_l["low"])}
-    return {"event": None, "side": None, "extended": False, "level": float(rows[-2]["high"])}
+        event, side = "CHoCH", LONG
+    elif choch_dn:
+        event, side = "CHoCH", SHORT
+    elif bos_up:
+        event, side, extended = "BOS", LONG, hh_count >= 2
+    elif bos_dn:
+        event, side, extended = "BOS", SHORT, ll_count >= 4
+    elif last_lh and last_ll:
+        event, side, extended = "BOS", SHORT, ll_count >= 4
+    elif last_hh and last_hl:
+        event, side, extended = "BOS", LONG, hh_count >= 2
+    level = _glue_level(side, highs, lows)
+    return {"event": event, "side": side, "extended": extended, "level": level}
 
 
 def structure_ok_fast(st: Dict) -> bool:
@@ -92,6 +112,11 @@ def _wait(why: str, extra: Optional[Dict] = None) -> Dict:
     }
     if extra:
         out.update(extra)
+        if extra.get("entry") is not None:
+            out["entry"] = extra["entry"]
+            out["direction"] = extra.get("direction") or out["direction"]
+            out["hunt"] = {"armed": bool(extra.get("armed")), "level": extra["entry"],
+                           "m5_path": "waiting", "event": extra.get("event")}
     return out
 
 
@@ -112,21 +137,26 @@ def evaluate_hunt_c_fast(
     st = _structure(candles_15m)
     event, side, level = st.get("event"), st.get("side"), st.get("level")
     atr15 = _atr(candles_15m)
+    glue_extra = {
+        "event": event, "weather_flag": (wx or {}).get("flag"), "slot": slot,
+        "entry": float(level or 0), "direction": (side or "").lower(),
+    }
     if not structure_ok_fast(st):
         return _wait(
             f"This 15-minute move is only a {event or 'poke'}, not a CHoCH or first break of structure. Skip.",
-            extra={"event": event, "weather_flag": (wx or {}).get("flag"), "slot": slot, "armed": False},
+            extra={**glue_extra, "armed": False},
         )
     if side not in (LONG, SHORT):
-        return _wait("Setup has no long or short side. Sitting out.")
+        return _wait("Setup has no long or short side. Sitting out.", extra=glue_extra)
     if wx and not side_allowed(wx.get("flag"), side):
         way = "long" if side == LONG else "short"
         return _wait(f"4-hour weather is {wx.get('flag')}, so no {way} trade now.",
-                     extra={"event": event, "weather_flag": wx.get("flag"), "slot": slot, "armed": True})
+                     extra={**glue_extra, "armed": True})
     prior = candles_15m[-2] if len(candles_15m) >= 2 else candles_15m[-1]
     prior_high, prior_low = float(prior["high"]), float(prior["low"])
     c = float(candle_5m["close"])
     hi, lo = float(candle_5m["high"]), float(candle_5m["low"])
+    lvl = float(level or (prior_high if side == LONG else prior_low))
     path = None
     if slot == 3:
         if side == LONG and c > prior_high:
@@ -134,17 +164,19 @@ def evaluate_hunt_c_fast(
         elif side == SHORT and c < prior_low:
             path = "impulse_3"
         else:
-            return _wait("The third 5-minute candle did not close through the last 15-minute high or low. No entry.",
-                         extra={"event": event, "slot": slot, "armed": True, "weather_flag": (wx or {}).get("flag")})
+            return _wait(
+                f"Waiting tap of live glue {lvl:.2f}. Slot-3 did not close through prior 15m.",
+                extra={**glue_extra, "armed": True, "entry": lvl},
+            )
     else:
         band = 0.25 * atr15 if atr15 else 0.4
-        tagged = (side == LONG and lo <= (level or prior_high) + band) or (side == SHORT and hi >= (level or prior_low) - band)
+        tagged = (side == LONG and lo <= lvl + band) or (side == SHORT and hi >= lvl - band)
         if not tagged:
-            return _wait("This 5-minute candle did not tap the 15-minute level. Waiting.",
-                         extra={"event": event, "slot": slot, "armed": True, "weather_flag": (wx or {}).get("flag"),
-                                "entry": float(level or 0), "direction": side.lower()})
+            return _wait(
+                f"Waiting tap of live glue {lvl:.2f} ({side}).",
+                extra={**glue_extra, "armed": True, "entry": lvl},
+            )
         path = "v2_clean"
-    lvl = float(level or (prior_high if side == LONG else prior_low))
     if side == LONG:
         stop, target = lvl - SL_ATR * atr15, lvl + TP_ATR * atr15
     else:
@@ -161,7 +193,7 @@ def evaluate_hunt_c_fast(
         "armed": True,
         "weather_flag": (wx or {}).get("flag"),
         "brain_version": HUNT_VERSION_C_FAST,
-        "why_state": ["Hunt C", f"15m {event}", path, "fill at 15m level", f"SL 1.5 ATR / TP 2.5 ATR ({atr15:.2f})"],
+        "why_state": ["Hunt C", f"15m {event}", path, f"glue {lvl:.2f}", "fill at live LL/HH"],
         "blocking_reasons": [],
         "hunt": {"armed": True, "level": lvl, "m5_path": path, "side": side, "event": event, "slot": slot},
     }
