@@ -1,4 +1,4 @@
-"""Bar-by-bar walk-forward. C-Fast V2 door, 1:3 RR, SL invalidates that direction until new structure."""
+"""Bar-by-bar walk-forward. C-Fast V2 door, 1:3 RR, Lab trail on."""
 from __future__ import annotations
 import threading
 from typing import Callable, Dict, Optional
@@ -13,7 +13,7 @@ from ..engines.utils import atr as atr_series
 from ..news.calendar import NewsGate
 from ..risk import RiskManager, SymbolSpec, ClampedAllocation
 from ..strategy import TopDownStrategy, StrategyConfig
-from ..trailing import TrailingTP, TrailingConfig
+from ..trailing import TrailingTP
 from .attribution import attribution, summary_stats
 from ..hunt.hunt_c_fast import frames_to_candles
 from ..hunt.cfast_v2 import CFastV2
@@ -39,7 +39,7 @@ class Backtest:
         self.tp_dollars = tp_dollars
         risk = RiskManager(spec, budget_pct=budget_pct, max_layers=max_layers,
                             allocation=ClampedAllocation(min_usd=min_risk_usd, max_usd=max_risk_usd))
-        self.book = PositionBook(spec, risk, TrailingTP(TrailingConfig(activate_r=999)), start_balance, mode="backtest")
+        self.book = PositionBook(spec, risk, TrailingTP(), start_balance, mode="backtest")
         cfg = StrategyConfig()
         if bias_min_score is not None:
             cfg.bias_min_score = bias_min_score
@@ -154,7 +154,7 @@ class Backtest:
             "range": {"start": m5["time"].iloc[0].isoformat(), "end": m5["time"].iloc[-1].isoformat(), "m5_bars": int(n)},
             "config": {"book": "C-Fast V2", "start_balance": self.book.start_balance, "max_layers": self.book.risk.max_layers,
                        "budget_pct": self.book.risk.budget_pct, "spread": self.spec.spread_price, "slippage": self.slippage,
-                       "fixed_lots": self.fixed_lots, "sl_dollars": self.sl_dollars, "tp_dollars": self.tp_dollars, "rr": "1:3"},
+                       "fixed_lots": self.fixed_lots, "sl_dollars": self.sl_dollars, "tp_dollars": self.tp_dollars, "rr": "1:3", "trail": True},
             "stats": summary_stats(trades, self.book.start_balance),
             "attribution": attribution(trades, self.strategy.consensus.weights),
             "trades": trades,
