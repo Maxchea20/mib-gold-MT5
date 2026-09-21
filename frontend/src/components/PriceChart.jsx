@@ -3,8 +3,66 @@ import { createChart, CandlestickSeries, HistogramSeries, createSeriesMarkers, C
 import { api } from "@/lib/api";
 
 const TFS = ["D1", "H4", "H1", "M15", "M5", "M1"];
+const SECS = { M1: 60, M5: 300, M15: 900, H1: 3600, H4: 14400, D1: 86400 };
 
-export default function PriceChart({ layers = [], barUpdates, tick, title = "XAUUSD" }) {
+function structureMarks(bars) {
+  const k = 2;
+  if (!bars || bars.length < k * 2 + 3) return [];
+  const highs = [];
+  const lows = [];
+  for (let i = k; i < bars.length - k; i++) {
+    const p = bars[i];
+    let isH = true;
+    let isL = true;
+    for (let j = i - k; j <= i + k; j++) {
+      if (bars[j].high > p.high) isH = false;
+      if (bars[j].low < p.low) isL = false;
+    }
+    if (isH) highs.push(p);
+    if (isL) lows.push(p);
+  }
+  const marks = [];
+  const hSlice = highs.slice(-24);
+  const lSlice = lows.slice(-24);
+  hSlice.forEach((h, n) => {
+    const prev = n === 0 ? null : hSlice[n - 1];
+    const tag = !prev ? "H" : h.high > prev.high ? "HH" : "LH";
+    marks.push({ time: h.time, position: "aboveBar", color: tag === "HH" ? "#fbbf24" : "#fdba74", shape: "arrowDown", text: tag });
+  });
+  lSlice.forEach((l, n) => {
+    const prev = n === 0 ? null : lSlice[n - 1];
+    const tag = !prev ? "L" : l.low < prev.low ? "LL" : "HL";
+    marks.push({ time: l.time, position: "belowBar", color: tag === "LL" ? "#38bdf8" : "#67e8f9", shape: "arrowUp", text: tag });
+  });
+  if (highs.length >= 2 && lows.length >= 2) {
+    const last = bars[bars.length - 1];
+    const lastH = highs[highs.length - 1];
+    const prevH = highs[highs.length - 2];
+    const lastL = lows[lows.length - 1];
+    const prevL = lows[lows.length - 2];
+    const c = last.close;
+    let ev = null;
+    let color = "#c084fc";
+    if (c > lastH.high && lastL.low < prevL.low) ev = "CHoCH";
+    else if (c < lastL.low && lastH.high > prevH.high) ev = "CHoCH";
+    else if (c > lastH.high && lastH.high > prevH.high) { ev = "BOS"; color = "#f472b6"; }
+    else if (c < lastL.low && lastL.low < prevL.low) { ev = "BOS"; color = "#f472b6"; }
+    if (ev) {
+      const up = c > lastH.high;
+      marks.push({
+        time: last.time,
+        position: up ? "belowBar" : "aboveBar",
+        color,
+        shape: "circle",
+        text: ev,
+      });
+    }
+  }
+  marks.sort((a, b) => a.time - b.time || String(a.text).localeCompare(String(b.text)));
+  return marks;
+}
+
+export default function PriceChart({ layers = [], barUpdates, tick, title = "XAUUSD", analysis }) {
   const elRef = useRef(null);
   const chartRef = useRef(null);
   const seriesRef = useRef(null);
@@ -12,7 +70,8 @@ export default function PriceChart({ layers = [], barUpdates, tick, title = "XAU
   const linesRef = useRef([]);
   const markersRef = useRef(null);
   const lastBarRef = useRef(null);
-  const [tf, setTf] = useState("M5");
+  const barsRef = useRef([]);
+  const [tf, setTf] = useState("M15");
   const [count, setCount] = useState(0);
 
   useEffect(() => {
@@ -31,14 +90,23 @@ export default function PriceChart({ layers = [], barUpdates, tick, title = "XAU
     return () => chart.remove();
   }, []);
 
+  const paintMarks = useCallback((extra = []) => {
+    const struct = structureMarks(barsRef.current);
+    const all = [...struct, ...extra].sort((a, b) => a.time - b.time);
+    markersRef.current?.setMarkers(all);
+  }, []);
+
   const load = useCallback(async (t) => {
     const d = await api.chart(t, 500);
-    seriesRef.current.setData(d.bars.map(({ time, open, high, low, close }) => ({ time, open, high, low, close })));
+    const mapped = d.bars.map(({ time, open, high, low, close }) => ({ time, open, high, low, close }));
+    barsRef.current = mapped;
+    seriesRef.current.setData(mapped);
     volRef.current.setData(d.bars.map((b) => ({ time: b.time, value: b.volume, color: b.close >= b.open ? "rgba(16,185,129,.25)" : "rgba(239,68,68,.25)" })));
     lastBarRef.current = d.bars[d.bars.length - 1] || null;
     setCount(d.bars.length);
+    paintMarks();
     chartRef.current.timeScale().scrollToRealTime();
-  }, []);
+  }, [paintMarks]);
 
   useEffect(() => { load(tf); }, [tf, load]);
 
@@ -49,13 +117,17 @@ export default function PriceChart({ layers = [], barUpdates, tick, title = "XAU
         seriesRef.current.update({ time: b.time, open: b.open, high: b.high, low: b.low, close: b.close });
         volRef.current.update({ time: b.time, value: b.volume, color: b.close >= b.open ? "rgba(16,185,129,.25)" : "rgba(239,68,68,.25)" });
         lastBarRef.current = b;
+        const bars = barsRef.current;
+        if (bars.length && bars[bars.length - 1].time === b.time) bars[bars.length - 1] = b;
+        else bars.push(b);
+        paintMarks();
       }
     }
-  }, [barUpdates, tf]);
+  }, [barUpdates, tf, paintMarks]);
 
   useEffect(() => {
     if (!tick || !lastBarRef.current) return;
-    const secs = { M1: 60, M5: 300, M15: 900, H1: 3600, H4: 14400, D1: 86400 }[tf];
+    const secs = SECS[tf];
     const tSec = Math.floor(new Date(tick.time).getTime() / 1000);
     const bucket = Math.floor(tSec / secs) * secs;
     const lb = lastBarRef.current;
@@ -71,26 +143,33 @@ export default function PriceChart({ layers = [], barUpdates, tick, title = "XAU
   useEffect(() => {
     const s = seriesRef.current; if (!s) return;
     linesRef.current.forEach((l) => s.removePriceLine(l)); linesRef.current = [];
-    const markers = [];
+    const extra = [];
+    const hunt = analysis?.hunt || {};
+    const lvl = hunt.entry || hunt.hunt?.level;
+    if (lvl) {
+      linesRef.current.push(s.createPriceLine({
+        price: Number(lvl), color: "#eab308", lineWidth: 1, lineStyle: 2,
+        title: `HUNT ${hunt.event || ""} ${Number(lvl).toFixed(2)}`,
+      }));
+    }
     layers.forEach((l) => {
       const c = l.direction === "long" ? "#10b981" : "#ef4444";
       linesRef.current.push(s.createPriceLine({ price: l.entry, color: c, lineWidth: 1, lineStyle: 0, title: `L${l.layer_number} ${l.direction.toUpperCase()} ${l.lots}` }));
       linesRef.current.push(s.createPriceLine({ price: l.sl, color: "#f97316", lineWidth: 1, lineStyle: 2, title: `L${l.layer_number} SL` }));
       if (l.trail_level) linesRef.current.push(s.createPriceLine({ price: l.trail_level, color: "#06b6d4", lineWidth: 1, lineStyle: 3, title: `L${l.layer_number} trail TP` }));
       const t = Math.floor(new Date(l.timestamp).getTime() / 1000);
-      const secs = { M1: 60, M5: 300, M15: 900, H1: 3600, H4: 14400, D1: 86400 }[tf];
-      markers.push({ time: Math.floor(t / secs) * secs, position: l.direction === "long" ? "belowBar" : "aboveBar", color: c, shape: l.direction === "long" ? "arrowUp" : "arrowDown", text: `L${l.layer_number}` });
+      const secs = SECS[tf];
+      extra.push({ time: Math.floor(t / secs) * secs, position: l.direction === "long" ? "belowBar" : "aboveBar", color: c, shape: l.direction === "long" ? "arrowUp" : "arrowDown", text: `L${l.layer_number}` });
     });
-    markers.sort((a, b) => a.time - b.time);
-    markersRef.current?.setMarkers(markers);
-  }, [layers, tf]);
+    paintMarks(extra);
+  }, [layers, tf, analysis, paintMarks]);
 
   return (
     <div className="flex flex-col h-full min-h-0" data-testid="gold-chart-container">
       <div className="h-8 flex items-center justify-between px-3 bg-[var(--surface)] border-b border-[var(--hair)]">
         <div className="flex items-center gap-3">
           <span className="mono text-[10px] tracking-[.14em] uppercase text-dim">{title}</span>
-          <span className="text-mute text-[10px] mono">{count} bars · {tf}</span>
+          <span className="text-mute text-[10px] mono">{count} bars · {tf} · HH/HL/LL/LH · CHoCH/BOS</span>
         </div>
         <div className="flex gap-1">
           {TFS.map((t) => <button key={t} className={`btn ${t === tf ? "active" : ""}`} data-testid={`timeframe-btn-${t}`} onClick={() => setTf(t)}>{t}</button>)}
