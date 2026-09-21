@@ -2,7 +2,6 @@
 from __future__ import annotations
 import asyncio
 import logging
-import json
 import os
 from datetime import datetime
 from typing import Callable, Awaitable, Dict, Optional
@@ -21,7 +20,6 @@ from .trailing import TrailingTP, TrailingConfig
 from .bars_cache import load_m1, merge_live, upsert_m1
 from .hunt.hunt_c_fast import frames_to_candles
 from .hunt.cfast_v2 import CFastV2
-from .hunt.lifecycle import position_from_layer, reevaluate, EXIT, TRAIL
 
 log = logging.getLogger("mibgold.live")
 TFS = ("M5", "M15", "H1", "H4", "D1")
@@ -45,15 +43,13 @@ class LiveEngine:
         self.book = PositionBook(self.spec, self.risk, TrailingTP(TrailingConfig(activate_r=999)), float(acc["balance"]),
                                  mode="live" if adapter.name == "mt5" else "paper")
         self.fixed_lots = float(os.environ.get("FIXED_LOTS", "0.02"))
-        self.sl_dollars = float(os.environ.get("SL_DOLLARS", "1.5"))
+        self.sl_dollars = float(os.environ.get("SL_DOLLARS", "1.0"))
         self.tp_dollars = self.sl_dollars * 3.0
         self.brain = TradeBrain(dead_min=float(os.environ.get("DEAD_FILL_MIN", "2")),
                                 dead_r=float(os.environ.get("DEAD_FILL_R", "0.15")))
         self.cfast = CFastV2(log=lambda m: self._log(m))
-        self.cooldown_min = 0.0
         self.last_exit_at: Optional[datetime] = None
-        cfg = StrategyConfig()
-        self.strategy = TopDownStrategy(EngineSuite(), Consensus(), cfg)
+        self.strategy = TopDownStrategy(EngineSuite(), Consensus(), StrategyConfig())
         self.auto_trade = os.environ.get("AUTO_TRADE", "true").lower() == "true"
         self.history_bars = int(os.environ.get("HISTORY_M1_BARS", "50000"))
         self.tick: Optional[Tick] = None
@@ -107,7 +103,6 @@ class LiveEngine:
             "symbol": self.spec.to_dict(), "tick": self.tick.to_dict() if self.tick else None,
             "session": self.analysis.get("session"), "account": snap,
             "today_pnl": round(today, 2),
-            "today_pnl_text": ("Floating +" if today >= 0 else "Floating -") + f"${abs(today):,.2f}",
             "news": self.gate_state, "analysis": self.analysis, "m5_atr": round(self.m5_atr, 3),
             "last_m5": self.last_m5.isoformat() if self.last_m5 else None,
             "book_rules": {"layers": self.risk.max_layers, "lot": self.fixed_lots, "sl": self.sl_dollars, "tp": self.tp_dollars},
@@ -184,9 +179,11 @@ class LiveEngine:
             if direction in ("long", "short") and hunt.get("entry"):
                 sl_dist = self.sl_dollars if self.sl_dollars else abs(float(hunt["entry"]) - float(hunt["stop"]))
                 lots = self.fixed_lots
-                order = self.adapter.place_order(direction, lots, None)
+                planned = float(hunt["entry"])
+                sl, tp = self.cfast.apply_fixed_rr(planned, sl_dist, direction)
+                order = self.adapter.place_order(direction, lots, sl)
                 if order.get("ok"):
-                    fill = order.get("price") or float(hunt["entry"])
+                    fill = order.get("price") or planned
                     sl, tp = self.cfast.apply_fixed_rr(fill, sl_dist, direction)
                     risk_usd = lots * sl_dist * self.spec.contract_size
                     opened = self.book.open_layer(direction, fill, sl, lots, risk_usd, now,
@@ -199,6 +196,7 @@ class LiveEngine:
                     await self.broadcast({"type": "trade_opened", "trade": rec, "thesis": self.brain.theses[opened.id].to_dict()})
                 else:
                     blocked = f"Order rejected: {order}"
+                    self._log(blocked)
             else:
                 blocked = (hunt.get("why_state") or ["no C-Fast setup"])[0]
         self.analysis["gate_reason"] = blocked
