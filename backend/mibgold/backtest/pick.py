@@ -8,6 +8,7 @@ from ..scalp.cfast_v21_h2 import CFastV21H2
 from ..scalp.liq_join import LiqJoinEngine
 from ..scalp.liq_join_m3 import LiqJoinM3
 from ..scalp.liq_join_m3_r1 import LiqJoinM3R1
+from ..scalp.liq_join_m1 import LiqJoinM1
 
 
 def make_engine(book: str = "scalp_v1"):
@@ -15,6 +16,8 @@ def make_engine(book: str = "scalp_v1"):
     env = (os.environ.get("MIBGOLD_LAB_BOOK") or "").strip().lower()
     if env:
         b = env
+    if b in ("liq_join_m1", "liq-join-m1", "liqm1"):
+        return LiqJoinM1(), "LIQ-JOIN M1 HOLD"
     if b in ("liq_join_m3_r1", "liq-join-m3-r1", "liqm3r1"):
         return LiqJoinM3R1(), "LIQ-JOIN M3 1R"
     if b in ("liq_join_m3", "liq-join-m3", "liqm3"):
