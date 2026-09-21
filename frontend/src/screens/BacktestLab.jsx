@@ -13,8 +13,8 @@ function shortTime(t) {
 
 export default function BacktestLab({ feed }) {
   const [form, setForm] = useState({
-    days: 90, start_balance: 100, max_layers: 1, budget_pct: 0.1, slippage_points: 5, use_news_gate: true,
-    csv_path: DEFAULT_CSV, fixed_lots: 0.02, min_risk_usd: 1, max_risk_usd: 100,
+    days: 30, start_balance: 100, max_layers: 1, budget_pct: 0.1, slippage_points: 5, use_news_gate: true,
+    csv_path: DEFAULT_CSV, fixed_lots: 0.02, min_risk_usd: 1, max_risk_usd: 100, book: "cont_h1",
   });
   const [runId, setRunId] = useState(null);
   const [progress, setProgress] = useState(0);
@@ -61,11 +61,11 @@ export default function BacktestLab({ feed }) {
     return () => clearInterval(t);
   }, [runId, result, err]);
 
-  const run = async () => {
+  const run = async (book) => {
     setErr(null); setResult(null); setTrades([]); setProgress(0); setSavedPath(null); setTick(null);
-    const body = { ...form };
+    const body = { ...form, book: book || form.book };
     if (!body.csv_path) delete body.csv_path;
-    try { const r = await api.runBacktest(body); setRunId(r.id); } catch (e) { setErr(e?.response?.data?.detail || e.message); }
+    try { const r = await api.runBacktest(body); setRunId(r.id); setForm((f) => ({ ...f, book: body.book })); } catch (e) { setErr(e?.response?.data?.detail || e.message); }
   };
 
   const exportReport = async (kind) => {
@@ -85,15 +85,13 @@ export default function BacktestLab({ feed }) {
   const s = result?.stats || {};
   const exits = s.by_exit || {};
   const funnel = result?.funnel || {};
-  const conv = result?.conversions || {};
-  const codes = result?.reject_codes || {};
-  const book = result?.config?.book || "Scalp V1";
+  const book = result?.config?.book || form.book;
 
   return (
     <div className="flex-1 flex min-h-0">
       <div className="w-[280px] shrink-0 border-r border-[var(--hair)] overflow-y-auto">
-        <div className="panel-head">Scalp V1 - sweep / reclaim / BOS / 1M</div>
-        <div className="px-3 pt-2 text-[9px] mono text-mute">structural SL - no fixed TP - no trail - frozen params</div>
+        <div className="panel-head">CONT-H1 / Scalp V1 Lab</div>
+        <div className="px-3 pt-2 text-[9px] mono text-mute">H1 trend + LTF washout — V1 unchanged</div>
         <div className="p-3 grid grid-cols-2 gap-2">
           <Field label="capital $"><input className="input" type="number" value={form.start_balance} onChange={set("start_balance")} /></Field>
           <Field label="lot"><input className="input" type="number" step="0.01" value={form.fixed_lots} onChange={set("fixed_lots")} /></Field>
@@ -101,32 +99,17 @@ export default function BacktestLab({ feed }) {
           <Field label="layers"><input className="input" type="number" value={form.max_layers} onChange={set("max_layers")} /></Field>
         </div>
         <div className="px-3 pb-3 flex flex-col gap-2">
-          <button className={`btn active w-full ${running ? "breathe" : ""}`} onClick={run} disabled={!!running}>
-            {running ? `running ${pctRun.toFixed(0)}%` : "run Scalp V1"}
+          <button className={`btn active w-full ${running ? "breathe" : ""}`} onClick={() => run("cont_h1")} disabled={!!running}>
+            {running && form.book === "cont_h1" ? `running ${pctRun.toFixed(0)}%` : "run CONT-H1"}
           </button>
+          <button className="btn w-full" onClick={() => run("scalp_v1")} disabled={!!running}>run Scalp V1</button>
           {running && <div className="text-[9px] mono text-mute">{tick || "walking M1"}</div>}
-          {running && (
-            <div className="conf-track h-2">
-              <div className="conf-fill bg-gold breathe" style={{ width: `${Math.max(3, pctRun)}%` }} />
-            </div>
-          )}
           <button className="btn w-full" disabled={!runId} onClick={() => exportReport("json")}>download JSON</button>
           <button className="btn w-full" disabled={!runId} onClick={() => exportReport("txt")}>download TXT</button>
           {runId && <div className="text-[9px] mono text-mute break-all">{runId}</div>}
           {result?.event_file && <div className="text-[9px] mono text-mute break-all">events {result.event_file}</div>}
-          {result?.runtime_sec != null && <div className="text-[9px] mono text-mute">{result.m1_processed} M1 / {result.runtime_sec}s / {result.m1_per_sec}/s</div>}
-          {savedPath && <div className="text-bull text-[10px] mono break-all">saved {savedPath}</div>}
           {err && <div className="text-bear text-[10px] mono">{err}</div>}
         </div>
-        {result && (
-          <div className="px-3 pb-3 text-[9px] mono text-mute space-y-1">
-            <div>fires {funnel.fires ?? 0} / loc {funnel.locations_detected ?? 0}</div>
-            <div>sweep {funnel.sweeps_detected ?? 0} reclaim {funnel.reclaims_detected ?? 0}</div>
-            <div>bos {funnel.bos_5m_detected ?? 0} pb {funnel.pullbacks_detected ?? 0} cont {funnel.continuations_detected ?? 0}</div>
-            <div>cont-fire {conv.continuation_to_fire ?? "-"}</div>
-            {Object.entries(codes).slice(0, 8).map(([k, v]) => <div key={k}>{k} {v}</div>)}
-          </div>
-        )}
       </div>
       <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-y-auto">
         <div className="p-3 border-b border-[var(--hair)]">
@@ -139,7 +122,7 @@ export default function BacktestLab({ feed }) {
             <Stat k="win rate" v={s.win_rate == null ? "-" : pct(s.win_rate)} />
             <Stat k="PF" v={s.profit_factor ?? "-"} />
             <Stat k="avg R" v={(s.average_r ?? s.avg_r) == null ? "-" : rTxt(s.average_r ?? s.avg_r)} />
-            <Stat k="net" v={s.net_pnl_text || usd(s.net_pnl)} good={s.net_pnl >= 0} />
+            <Stat k="net" v={usd(s.net_pnl)} good={s.net_pnl >= 0} />
             <Stat k="final" v={result ? usd(result.final_balance) : "-"} gold />
             <Stat k="SL / fail" v={`${exits.STRUCTURAL_SL || 0} / ${exits.THESIS_FAIL || 0}`} />
           </div>
@@ -162,12 +145,12 @@ export default function BacktestLab({ feed }) {
             <thead><tr><th>time</th><th>side</th><th>loc</th><th>session</th><th>in</th><th>out</th><th>exit</th><th>R</th><th>pnl</th></tr></thead>
             <tbody>
               {trades.slice(0, 2000).map((t, i) => {
-                const r = Number(t.r_multiple ?? 0); const pnl = Number(t.pnl_usd ?? t.pnl ?? 0); const side = t.direction || "";
+                const r = Number(t.r_multiple ?? t.r ?? 0); const pnl = Number(t.pnl_usd ?? t.pnl ?? 0); const side = t.direction || t.side || "";
                 return (
                   <tr key={t.id || i} className="mono text-[10px]">
-                    <td>{shortTime(t.exit_time || t.timestamp)}</td>
+                    <td>{shortTime(t.exit_time || t.time || t.timestamp)}</td>
                     <td className={side === "long" ? "text-bull" : "text-bear"}>{String(side).toUpperCase()}</td>
-                    <td>{t.location_type || "-"}</td><td>{t.session}</td><td>{t.entry}</td><td>{t.exit_price}</td><td>{t.exit_reason}</td>
+                    <td>{t.location_type || "-"}</td><td>{t.session}</td><td>{t.entry}</td><td>{t.exit_price || t.exit}</td><td>{t.exit_reason}</td>
                     <td className={r >= 0 ? "text-bull" : "text-bear"}>{rTxt(r)}</td>
                     <td className={pnl >= 0 ? "text-bull" : "text-bear"}>{usd(pnl, true)}</td>
                   </tr>
