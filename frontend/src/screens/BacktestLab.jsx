@@ -14,8 +14,7 @@ function shortTime(t) {
 export default function BacktestLab({ feed }) {
   const [form, setForm] = useState({
     days: 90, start_balance: 100, max_layers: 1, budget_pct: 0.1, slippage_points: 5, use_news_gate: true,
-    csv_path: DEFAULT_CSV, fixed_lots: 0.02, sl_dollars: 1.5, tp_dollars: 4.5,
-    bias_min_score: 0.10, struct_oppose_score: 0.15, min_risk_usd: 1, max_risk_usd: 100,
+    csv_path: DEFAULT_CSV, fixed_lots: 0.02, min_risk_usd: 1, max_risk_usd: 100,
   });
   const [runId, setRunId] = useState(null);
   const [progress, setProgress] = useState(0);
@@ -66,7 +65,7 @@ export default function BacktestLab({ feed }) {
 
   const run = async () => {
     setErr(null); setResult(null); setTrades([]); setProgress(0); setSavedPath(null);
-    const body = { ...form, tp_dollars: Number(form.sl_dollars) * 3 };
+    const body = { ...form };
     if (!body.csv_path) delete body.csv_path;
     try { const r = await api.runBacktest(body); setRunId(r.id); } catch (e) { setErr(e?.response?.data?.detail || e.message); }
   };
@@ -82,30 +81,30 @@ export default function BacktestLab({ feed }) {
     }
   };
 
-  const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.type === "checkbox" ? e.target.checked : Number(e.target.value) }));
+  const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.type === "checkbox" ? e.target.checked : (e.target.type === "text" ? e.target.value : Number(e.target.value)) }));
   const running = runId && !result && !err;
   const pctRun = Math.max(0, Math.min(100, progress * 100));
   const s = result?.stats || {};
   const exits = s.by_exit || {};
-  const sln = exits.SL || 0;
-  const trail = (exits.TRAIL_TP || 0) + (exits.TP || 0);
-  const v2 = result?.cfast_v2 || {};
+  const funnel = result?.funnel || {};
+  const conv = result?.conversions || {};
+  const codes = result?.reject_codes || {};
+  const book = result?.config?.book || "Scalp V1";
 
   return (
     <div className="flex-1 flex min-h-0">
-      <div className="w-[260px] shrink-0 border-r border-[var(--hair)] overflow-y-auto">
-        <div className="panel-head">C-Fast V2.1 - setup reset - RR 1:3</div>
+      <div className="w-[280px] shrink-0 border-r border-[var(--hair)] overflow-y-auto">
+        <div className="panel-head">Scalp V1 - sweep / reclaim / BOS / 1M</div>
+        <div className="px-3 pt-2 text-[9px] mono text-mute">structural SL - no fixed TP - no trail - frozen params</div>
         <div className="p-3 grid grid-cols-2 gap-2">
           <Field label="capital $"><input className="input" type="number" value={form.start_balance} onChange={set("start_balance")} /></Field>
           <Field label="lot"><input className="input" type="number" step="0.01" value={form.fixed_lots} onChange={set("fixed_lots")} /></Field>
-          <Field label="SL $"><input className="input" type="number" step="0.1" value={form.sl_dollars} onChange={set("sl_dollars")} /></Field>
-          <Field label="TP $ (=3x SL)"><input className="input" type="number" step="0.1" value={(Number(form.sl_dollars) * 3).toFixed(2)} readOnly /></Field>
           <Field label="days"><input className="input" type="number" value={form.days} onChange={set("days")} /></Field>
           <Field label="layers"><input className="input" type="number" value={form.max_layers} onChange={set("max_layers")} /></Field>
         </div>
         <div className="px-3 pb-3 flex flex-col gap-2">
           <button className={`btn active w-full ${running ? "breathe" : ""}`} onClick={run} disabled={!!running}>
-            {running ? `running ${pctRun.toFixed(0)}%` : "run C-Fast V2.1"}
+            {running ? `running ${pctRun.toFixed(0)}%` : "run Scalp V1"}
           </button>
           {running && (
             <div className="conf-track h-2">
@@ -115,27 +114,34 @@ export default function BacktestLab({ feed }) {
           <button className="btn w-full" disabled={!runId} onClick={() => exportReport("json")}>download JSON</button>
           <button className="btn w-full" disabled={!runId} onClick={() => exportReport("txt")}>download TXT</button>
           {runId && <div className="text-[9px] mono text-mute break-all">{runId}</div>}
+          {result?.event_file && <div className="text-[9px] mono text-mute break-all">events {result.event_file}</div>}
           {savedPath && <div className="text-bull text-[10px] mono break-all">saved {savedPath}</div>}
           {err && <div className="text-bear text-[10px] mono">{err}</div>}
-          {v2.old_setup_blocked != null && (
-            <div className="text-[9px] mono text-mute">blocked old {v2.old_setup_blocked} / new after SL {v2.new_same_dir_after_sl || 0}</div>
-          )}
         </div>
+        {result && (
+          <div className="px-3 pb-3 text-[9px] mono text-mute space-y-1">
+            <div>fires {funnel.fires ?? 0} / loc {funnel.locations_detected ?? 0}</div>
+            <div>sweep {funnel.sweeps_detected ?? 0} reclaim {funnel.reclaims_detected ?? 0}</div>
+            <div>bos {funnel.bos_5m_detected ?? 0} pb {funnel.pullbacks_detected ?? 0} cont {funnel.continuations_detected ?? 0}</div>
+            <div>cont-fire {conv.continuation_to_fire ?? "-"}</div>
+            {Object.entries(codes).slice(0, 8).map(([k, v]) => <div key={k}>{k} {v}</div>)}
+          </div>
+        )}
       </div>
       <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-y-auto">
         <div className="p-3 border-b border-[var(--hair)]">
           <div className="text-[10px] mono uppercase tracking-widest text-mute mb-2">
-            C-Fast V2.1 {result?.id || "-"} - {result?.range ? `${String(result.range.start).slice(0, 10)} to ${String(result.range.end).slice(0, 10)}` : (running ? `walking ${pctRun.toFixed(0)}%` : "no run")}
+            {book} {result?.id || "-"} - {result?.range ? `${String(result.range.start).slice(0, 10)} to ${String(result.range.end).slice(0, 10)}` : (running ? `walking ${pctRun.toFixed(0)}%` : "no run")}
           </div>
           <div className="grid grid-cols-8 gap-3 mono text-[12px]">
             <Stat k="trades" v={s.trades ?? "-"} />
+            <Stat k="long / short" v={s.long_trades != null ? `${s.long_trades}/${s.short_trades}` : "-"} />
             <Stat k="win rate" v={s.win_rate == null ? "-" : pct(s.win_rate)} />
             <Stat k="PF" v={s.profit_factor ?? "-"} />
-            <Stat k="avg R" v={s.avg_r == null ? "-" : rTxt(s.avg_r)} />
+            <Stat k="avg R" v={(s.average_r ?? s.avg_r) == null ? "-" : rTxt(s.average_r ?? s.avg_r)} />
             <Stat k="net" v={s.net_pnl_text || usd(s.net_pnl)} good={s.net_pnl >= 0} />
-            <Stat k="return" v={s.return_pct == null ? "-" : pct(s.return_pct, 2)} good={s.return_pct >= 0} />
             <Stat k="final" v={result ? usd(result.final_balance) : "-"} gold />
-            <Stat k="SL / TP" v={s.trades ? `${((sln / s.trades) * 100).toFixed(0)}% / ${((trail / s.trades) * 100).toFixed(0)}%` : "-"} />
+            <Stat k="SL / fail" v={`${exits.STRUCTURAL_SL || 0} / ${exits.THESIS_FAIL || 0}`} />
           </div>
         </div>
         <div className="h-[160px] shrink-0 border-b border-[var(--hair)]">
@@ -153,15 +159,15 @@ export default function BacktestLab({ feed }) {
         </div>
         <div className="flex-1 min-h-0 overflow-auto">
           <table className="tbl">
-            <thead><tr><th>time</th><th>side</th><th>L</th><th>session</th><th>in</th><th>out</th><th>exit</th><th>R</th><th>pnl</th></tr></thead>
+            <thead><tr><th>time</th><th>side</th><th>loc</th><th>session</th><th>in</th><th>out</th><th>exit</th><th>R</th><th>pnl</th></tr></thead>
             <tbody>
               {trades.slice(0, 2000).map((t, i) => {
-                const r = Number(t.r_multiple ?? 0); const pnl = Number(t.pnl ?? 0); const side = t.direction || "";
+                const r = Number(t.r_multiple ?? 0); const pnl = Number(t.pnl_usd ?? t.pnl ?? 0); const side = t.direction || "";
                 return (
                   <tr key={t.id || i} className="mono text-[10px]">
                     <td>{shortTime(t.exit_time || t.timestamp)}</td>
                     <td className={side === "long" ? "text-bull" : "text-bear"}>{String(side).toUpperCase()}</td>
-                    <td>L{t.layer_number}</td><td>{t.session}</td><td>{t.entry}</td><td>{t.exit_price}</td><td>{t.exit_reason}</td>
+                    <td>{t.location_type || "-"}</td><td>{t.session}</td><td>{t.entry}</td><td>{t.exit_price}</td><td>{t.exit_reason}</td>
                     <td className={r >= 0 ? "text-bull" : "text-bear"}>{rTxt(r)}</td>
                     <td className={pnl >= 0 ? "text-bull" : "text-bear"}>{usd(pnl, true)}</td>
                   </tr>
