@@ -79,13 +79,13 @@ class CFastV2:
         level = float(raw.get("entry") or raw.get("stop") or 0)
         key = setup_key(direction, raw.get("event") or "", level)
 
-        if key in self.failed_keys or key in self.completed_keys:
+        if key in self.failed_keys:
             self.stats["old_setup_blocked"] += 1
             raw["action"] = "WAIT"
-            why = f"OLD SETUP {key} DONE - will not reuse"
+            why = f"OLD SETUP {key} FAILED - will not reuse"
             raw["why_state"] = [why]
             raw["blocking_reasons"] = [why]
-            raw["structure_state"] = "FAILED" if key in self.failed_keys else "COMPLETED"
+            raw["structure_state"] = "FAILED"
             raw["structure_key"] = key
             return raw
 
