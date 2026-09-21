@@ -1,10 +1,12 @@
-"""Deterministic bar helpers for Scalp V1. Closed candles only."""
+"""Point-in-time location helpers. Bar timestamps are treated as UTC (MT5 offset already applied in the adapter)."""
 from __future__ import annotations
-from typing import Dict, List, Optional, Tuple
-from datetime import datetime
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional
 from .config import ASIA, LONDON, NY
 
 Candle = Dict
+# Previous day = last fully closed D1 bar whose period end <= now.
+PREV_DAY_NOTE = "PDH/PDL = high/low of the last completed daily bar (UTC after MT5_SERVER_UTC_OFFSET)."
 
 
 def rows(df) -> List[Candle]:
@@ -70,12 +72,10 @@ def last_swing_low(cs, k=2):
 
 
 def session_name(hour: int) -> str:
-    if ASIA[0] <= hour < ASIA[1] and not (LONDON[0] <= hour < LONDON[1]):
-        return "ASIA"
-    if LONDON[0] <= hour < 12:
-        return "LONDON"
     if 12 <= hour < 16:
         return "LONDON_NY"
+    if LONDON[0] <= hour < 12:
+        return "LONDON"
     if NY[0] <= hour < NY[1]:
         return "NEW_YORK"
     if hour >= 21:
@@ -83,12 +83,68 @@ def session_name(hour: int) -> str:
     return "ASIA"
 
 
-def locations(m15, d1, m5, k: int = 2):
+def vol_bucket(ratio: float) -> str:
+    if ratio < 0.70:
+        return "LOW"
+    if ratio < 1.30:
+        return "NORMAL"
+    if ratio < 2.00:
+        return "EXPANSION"
+    return "EXTREME"
+
+
+def _utc(ts: int) -> datetime:
+    return datetime.utcfromtimestamp(int(ts))
+
+
+def session_hl(cs: List[Candle], now_ts: int, start_h: int, end_h: int) -> Optional[Dict]:
+    """High/low of the current session so far, else last completed session. No future bars."""
+    now = _utc(now_ts)
+    past = [c for c in cs if c["ts"] < now_ts]
+    if not past:
+        return None
+
+    def in_sess(c):
+        h = _utc(c["ts"]).hour
+        return start_h <= h < end_h
+
+    today = [c for c in past if _utc(c["ts"]).date() == now.date() and in_sess(c)]
+    if today:
+        return {"high": max(c["high"] for c in today), "low": min(c["low"] for c in today)}
+    yday = now.date() - timedelta(days=1)
+    prev = [c for c in past if _utc(c["ts"]).date() == yday and in_sess(c)]
+    if prev:
+        return {"high": max(c["high"] for c in prev), "low": min(c["low"] for c in prev)}
+    return None
+
+
+def session_vwap(cs: List[Candle], now_ts: int) -> Optional[float]:
+    now = _utc(now_ts)
+    bars = [c for c in cs if c["ts"] < now_ts and _utc(c["ts"]).date() == now.date()]
+    den = sum(c["vol"] for c in bars)
+    if den <= 0:
+        return None
+    num = sum(((c["high"] + c["low"] + c["close"]) / 3.0) * c["vol"] for c in bars)
+    return num / den
+
+
+def locations(m15, d1, m5, m1=None, k: int = 2, now_ts: Optional[int] = None) -> List[Dict]:
     out = []
-    if len(d1) >= 2:
-        prev = d1[-2]
+    # Last completed D1 in the window is the immediately preceding completed day.
+    if d1:
+        prev = d1[-1]
         out.append({"name": "PDH", "side": "res", "price": prev["high"]})
         out.append({"name": "PDL", "side": "sup", "price": prev["low"]})
+    src = m1 if m1 else m5
+    ts = now_ts or (src[-1]["ts"] if src else 0)
+    asia = session_hl(src, ts, ASIA[0], ASIA[1])
+    lon = session_hl(src, ts, LONDON[0], LONDON[1])
+    if asia:
+        out.append({"name": "ASIA_H", "side": "res", "price": asia["high"]})
+        out.append({"name": "ASIA_L", "side": "sup", "price": asia["low"]})
+    if lon:
+        out.append({"name": "LONDON_H", "side": "res", "price": lon["high"]})
+        out.append({"name": "LONDON_L", "side": "sup", "price": lon["low"]})
     sh = last_swing_high(m15, k)
     sl = last_swing_low(m15, k)
     if sh:
