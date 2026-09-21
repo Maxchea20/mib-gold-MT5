@@ -18,6 +18,7 @@ export default function BacktestLab({ feed }) {
   });
   const [runId, setRunId] = useState(null);
   const [progress, setProgress] = useState(0);
+  const [tick, setTick] = useState(null);
   const [result, setResult] = useState(null);
   const [trades, setTrades] = useState([]);
   const [err, setErr] = useState(null);
@@ -27,24 +28,21 @@ export default function BacktestLab({ feed }) {
     try {
       const r = await api.backtest(id);
       if (!r) return;
-      if (r.status === "error") { setErr(r.error || "backtest error"); setProgress(1); return; }
-      if (r.status === "running" || r.status === "pending") {
-        if (typeof r.progress === "number") setProgress(r.progress);
-        return;
-      }
+      if (typeof r.progress === "number") setProgress(r.progress);
+      if (r.current_ts) setTick(r.current_ts);
+      if (r.status === "error") { setErr(r.error || "backtest error"); return; }
+      if (r.status === "running" || r.status === "pending") return;
       if (r.stats || r.status === "done") {
         setResult(r); setProgress(1);
         if (Array.isArray(r.trades) && r.trades.length) setTrades(r.trades);
         else {
-          try { setTrades(await api.backtestTrades(id)); }
-          catch (e) {
-            setErr((e?.response?.data?.detail || e.message || "trades fetch failed") + " - stats loaded, table empty");
-            setTrades([]);
-          }
+          try { setTrades(await api.backtestTrades(id)); } catch (e) { setTrades([]); }
         }
       }
     } catch (e) {
-      setErr(e?.response?.data?.detail || e.message);
+      const msg = e?.response?.data?.detail || e.message || "";
+      if (String(msg).toLowerCase().includes("timeout")) return;
+      setErr(msg);
     }
   };
 
@@ -59,12 +57,12 @@ export default function BacktestLab({ feed }) {
   useEffect(() => {
     if (!runId || result || err) return;
     finish(runId);
-    const t = setInterval(() => finish(runId), 800);
+    const t = setInterval(() => finish(runId), 1000);
     return () => clearInterval(t);
   }, [runId, result, err]);
 
   const run = async () => {
-    setErr(null); setResult(null); setTrades([]); setProgress(0); setSavedPath(null);
+    setErr(null); setResult(null); setTrades([]); setProgress(0); setSavedPath(null); setTick(null);
     const body = { ...form };
     if (!body.csv_path) delete body.csv_path;
     try { const r = await api.runBacktest(body); setRunId(r.id); } catch (e) { setErr(e?.response?.data?.detail || e.message); }
@@ -106,6 +104,7 @@ export default function BacktestLab({ feed }) {
           <button className={`btn active w-full ${running ? "breathe" : ""}`} onClick={run} disabled={!!running}>
             {running ? `running ${pctRun.toFixed(0)}%` : "run Scalp V1"}
           </button>
+          {running && <div className="text-[9px] mono text-mute">{tick || "walking M1"}</div>}
           {running && (
             <div className="conf-track h-2">
               <div className="conf-fill bg-gold breathe" style={{ width: `${Math.max(3, pctRun)}%` }} />
@@ -115,6 +114,7 @@ export default function BacktestLab({ feed }) {
           <button className="btn w-full" disabled={!runId} onClick={() => exportReport("txt")}>download TXT</button>
           {runId && <div className="text-[9px] mono text-mute break-all">{runId}</div>}
           {result?.event_file && <div className="text-[9px] mono text-mute break-all">events {result.event_file}</div>}
+          {result?.runtime_sec != null && <div className="text-[9px] mono text-mute">{result.m1_processed} M1 / {result.runtime_sec}s / {result.m1_per_sec}/s</div>}
           {savedPath && <div className="text-bull text-[10px] mono break-all">saved {savedPath}</div>}
           {err && <div className="text-bear text-[10px] mono">{err}</div>}
         </div>
