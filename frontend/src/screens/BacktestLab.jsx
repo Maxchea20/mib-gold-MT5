@@ -14,7 +14,7 @@ function shortTime(t) {
 export default function BacktestLab({ feed }) {
   const [form, setForm] = useState({
     days: 30, start_balance: 100, max_layers: 1, budget_pct: 0.1, slippage_points: 5, use_news_gate: true,
-    csv_path: DEFAULT_CSV, fixed_lots: 0.02, min_risk_usd: 1, max_risk_usd: 100, book: "cont_h1",
+    csv_path: DEFAULT_CSV, fixed_lots: 0.02, min_risk_usd: 1, max_risk_usd: 100, book: "hunt_h2",
   });
   const [runId, setRunId] = useState(null);
   const [progress, setProgress] = useState(0);
@@ -84,14 +84,13 @@ export default function BacktestLab({ feed }) {
   const pctRun = Math.max(0, Math.min(100, progress * 100));
   const s = result?.stats || {};
   const exits = s.by_exit || {};
-  const funnel = result?.funnel || {};
   const book = result?.config?.book || form.book;
 
   return (
     <div className="flex-1 flex min-h-0">
       <div className="w-[280px] shrink-0 border-r border-[var(--hair)] overflow-y-auto">
-        <div className="panel-head">CONT-H1 / Scalp V1 Lab</div>
-        <div className="px-3 pt-2 text-[9px] mono text-mute">H1 trend + LTF washout — V1 unchanged</div>
+        <div className="panel-head">Hunt H2 / CONT / V1</div>
+        <div className="px-3 pt-2 text-[9px] mono text-mute">H2 = 15M level, M1 fire, 15M TP</div>
         <div className="p-3 grid grid-cols-2 gap-2">
           <Field label="capital $"><input className="input" type="number" value={form.start_balance} onChange={set("start_balance")} /></Field>
           <Field label="lot"><input className="input" type="number" step="0.01" value={form.fixed_lots} onChange={set("fixed_lots")} /></Field>
@@ -99,9 +98,10 @@ export default function BacktestLab({ feed }) {
           <Field label="layers"><input className="input" type="number" value={form.max_layers} onChange={set("max_layers")} /></Field>
         </div>
         <div className="px-3 pb-3 flex flex-col gap-2">
-          <button className={`btn active w-full ${running ? "breathe" : ""}`} onClick={() => run("cont_h1")} disabled={!!running}>
-            {running && form.book === "cont_h1" ? `running ${pctRun.toFixed(0)}%` : "run CONT-H1"}
+          <button className={`btn active w-full ${running ? "breathe" : ""}`} onClick={() => run("hunt_h2")} disabled={!!running}>
+            {running && form.book === "hunt_h2" ? `running ${pctRun.toFixed(0)}%` : "run Hunt H2"}
           </button>
+          <button className="btn w-full" onClick={() => run("cont_h1")} disabled={!!running}>run CONT-H1</button>
           <button className="btn w-full" onClick={() => run("scalp_v1")} disabled={!!running}>run Scalp V1</button>
           {running && <div className="text-[9px] mono text-mute">{tick || "walking M1"}</div>}
           <button className="btn w-full" disabled={!runId} onClick={() => exportReport("json")}>download JSON</button>
@@ -124,7 +124,7 @@ export default function BacktestLab({ feed }) {
             <Stat k="avg R" v={(s.average_r ?? s.avg_r) == null ? "-" : rTxt(s.average_r ?? s.avg_r)} />
             <Stat k="net" v={usd(s.net_pnl)} good={s.net_pnl >= 0} />
             <Stat k="final" v={result ? usd(result.final_balance) : "-"} gold />
-            <Stat k="SL / fail" v={`${exits.STRUCTURAL_SL || 0} / ${exits.THESIS_FAIL || 0}`} />
+            <Stat k="SL / TP" v={`${exits.STRUCTURAL_SL || 0} / ${exits.STRUCTURE_TP || 0}`} />
           </div>
         </div>
         <div className="h-[160px] shrink-0 border-b border-[var(--hair)]">
