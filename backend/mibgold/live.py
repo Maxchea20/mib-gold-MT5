@@ -1,4 +1,4 @@
-"""Live loop. C-Fast V2.1 door on each new minute."""
+"""Live loop. C-Fast V2.1. Enter at live bid/ask when price tags the 15m level."""
 from __future__ import annotations
 import asyncio
 import logging
@@ -63,6 +63,7 @@ class LiveEngine:
         self.day: Optional[datetime.date] = None
         self.events: list = []
         self.started = False
+        self._last_fire_try: Optional[datetime] = None
 
     def _symbol(self) -> str:
         return getattr(self.adapter, "symbol", None) or self.spec.symbol
@@ -82,7 +83,8 @@ class LiveEngine:
         cut = pd.Timestamp(now.replace(second=0, microsecond=0))
         if cut.tzinfo is None:
             cut = cut.tz_localize("UTC")
-        self.frames = {tf: completed_only(df, tf, cut) if tf != "M1" else df for tf, df in frames.items()}
+        # keep forming M5 so a live tap can fire before the candle closes
+        self.frames = {tf: completed_only(df, tf, cut) if tf not in ("M1", "M5") else df for tf, df in frames.items()}
         if len(self.frames.get("M5", [])) > 20:
             self.m5_atr = safe_atr(self.frames["M5"].tail(60))
 
@@ -101,8 +103,7 @@ class LiveEngine:
         return {
             "connection": self.connection, "mode": self.book.mode, "auto_trade": self.auto_trade,
             "symbol": self.spec.to_dict(), "tick": self.tick.to_dict() if self.tick else None,
-            "session": self.analysis.get("session"), "account": snap,
-            "today_pnl": round(today, 2),
+            "session": self.analysis.get("session"), "account": snap, "today_pnl": round(today, 2),
             "news": self.gate_state, "analysis": self.analysis, "m5_atr": round(self.m5_atr, 3),
             "last_m5": self.last_m5.isoformat() if self.last_m5 else None,
             "book_rules": {"layers": self.risk.max_layers, "lot": self.fixed_lots, "sl": self.sl_dollars, "tp": self.tp_dollars},
@@ -140,20 +141,43 @@ class LiveEngine:
         minute = now.replace(second=0, microsecond=0)
         if self.last_minute is None or minute > self.last_minute:
             await self._on_minute(minute, now)
+        elif not self.book.layers:
+            await self._try_live_fire(now)
         for rec in self.book.on_bar(tick.ask, tick.bid, tick.mid, self.m5_atr, now):
             await self._closed(rec)
         await self.broadcast(self._tick_payload())
 
     async def _on_minute(self, minute: datetime, now: datetime):
         self.last_minute = minute
+        self.last_m5 = minute
         self.gate_state = self.gate.check(now)
         await self.interpreter.poll(now)
         self.rebuild_frames(minute)
-        await self._decide(minute, now)
+        await self._try_live_fire(now)
         await self.broadcast({"type": "bars", "bars": {tf: self.chart(tf, 2) for tf in TFS}, "news": self.gate_state})
 
-    async def _decide(self, minute: datetime, now: datetime):
-        self.last_m5 = minute
+    def _paint_tick_on_m5(self, candles: list) -> list:
+        if not candles or not self.tick:
+            return candles
+        last = dict(candles[-1])
+        px = float(self.tick.mid)
+        last["high"] = max(float(last.get("high", px)), float(self.tick.ask), px)
+        last["low"] = min(float(last.get("low", px)), float(self.tick.bid), px)
+        last["close"] = px
+        return candles[:-1] + [last]
+
+    def _run_hunt(self):
+        c15 = frames_to_candles(self.frames.get("M15"))
+        c5 = self._paint_tick_on_m5(frames_to_candles(self.frames.get("M5")))
+        c1 = frames_to_candles(self.frames.get("H1"))
+        c4 = frames_to_candles(self.frames.get("H4"))
+        if not c15 or not c5:
+            return {"action": "WAIT", "why_state": ["C-Fast V2.1 needs M15/M5"]}
+        parent = c5[-1]["ts"] - (c5[-1]["ts"] % 900)
+        live = [b for b in c5 if b["ts"] >= parent]
+        return self.cfast.evaluate(c15, c5[-1], live_5ms=live or [c5[-1]], candles_4h=c4, candles_1h=c1, candles_5m=c5)
+
+    async def _try_live_fire(self, now: datetime):
         self.analysis = self.strategy.analyze(self.frames, now, self.spec, self.interpreter.current(now))
         hunt = self._run_hunt()
         self.analysis["hunt"] = hunt
@@ -162,7 +186,6 @@ class LiveEngine:
             self.analysis["gate_reason"] = None
             self.analysis["summary"] = " | ".join(hunt.get("why_state") or ["C-Fast V2.1"])
             self.analysis.setdefault("bias", {})["direction"] = hunt.get("direction")
-            self.analysis.setdefault("entry", {})["direction"] = hunt.get("direction")
         else:
             self.analysis["fire"] = False
             self.analysis["gate_reason"] = (hunt.get("why_state") or ["WAIT"])[0]
@@ -170,31 +193,36 @@ class LiveEngine:
         opened = None
         if self.book.layers:
             blocked = blocked or "clip already open"
-        elif self.analysis["fire"] and self.gate_state.get("blocked"):
+        elif hunt.get("action") == "FIRE" and self.gate_state.get("blocked"):
             blocked = f"News gate: {self.gate_state.get('event', {}).get('title')}"
-        elif self.analysis["fire"] and not self.auto_trade:
+        elif hunt.get("action") == "FIRE" and not self.auto_trade:
             blocked = "Auto-trade paused by operator"
-        elif self.analysis["fire"] and self.tick:
+        elif hunt.get("action") == "FIRE" and self.tick:
             direction = (hunt.get("direction") or "").lower()
-            if direction in ("long", "short") and hunt.get("entry"):
-                sl_dist = self.sl_dollars if self.sl_dollars else abs(float(hunt["entry"]) - float(hunt["stop"]))
+            if direction in ("long", "short"):
+                live_px = float(self.tick.ask if direction == "long" else self.tick.bid)
+                sl_dist = float(self.sl_dollars)
+                sl, tp = self.cfast.apply_fixed_rr(live_px, sl_dist, direction)
                 lots = self.fixed_lots
-                planned = float(hunt["entry"])
-                sl, tp = self.cfast.apply_fixed_rr(planned, sl_dist, direction)
-                order = self.adapter.place_order(direction, lots, sl)
+                try:
+                    order = self.adapter.place_order(direction, lots, sl, tp=tp)
+                except Exception as e:
+                    order = {"ok": False, "comment": str(e)}
+                    self.cfast.active = None
                 if order.get("ok"):
-                    fill = order.get("price") or planned
+                    fill = float(order.get("price") or live_px)
                     sl, tp = self.cfast.apply_fixed_rr(fill, sl_dist, direction)
                     risk_usd = lots * sl_dist * self.spec.contract_size
                     opened = self.book.open_layer(direction, fill, sl, lots, risk_usd, now,
-                                                  {}, self.analysis.get("entry") or {}, "C-Fast V2.1",
+                                                  {}, {"direction": direction}, "C-Fast V2.1",
                                                   self.analysis.get("session"), self.analysis.get("bias") or {},
                                                   ticket=order.get("ticket"), tp=tp)
                     self.brain.open_thesis(opened, self.analysis)
                     rec = self.book.open_records(self.tick.mid)[-1]
-                    self._log(f"OPEN {hunt.get('setup_id')} {direction} {lots} @ {fill:.2f} SL {sl:.2f} TP {tp:.2f} RR=1:3")
+                    self._log(f"OPEN {hunt.get('setup_id')} {direction} {lots} @ LIVE {fill:.2f} SL {sl:.2f} TP {tp:.2f} RR=1:3")
                     await self.broadcast({"type": "trade_opened", "trade": rec, "thesis": self.brain.theses[opened.id].to_dict()})
                 else:
+                    self.cfast.active = None
                     blocked = f"Order rejected: {order}"
                     self._log(blocked)
             else:
@@ -223,17 +251,6 @@ class LiveEngine:
                 await self._closed(rec)
                 return rec
         return None
-
-    def _run_hunt(self):
-        c15 = frames_to_candles(self.frames.get("M15"))
-        c5 = frames_to_candles(self.frames.get("M5"))
-        c1 = frames_to_candles(self.frames.get("H1"))
-        c4 = frames_to_candles(self.frames.get("H4"))
-        if not c15 or not c5:
-            return {"action": "WAIT", "why_state": ["C-Fast V2.1 needs M15/M5"]}
-        parent = c5[-1]["ts"] - (c5[-1]["ts"] % 900)
-        live = [b for b in c5 if b["ts"] >= parent]
-        return self.cfast.evaluate(c15, c5[-1], live_5ms=live or [c5[-1]], candles_4h=c4, candles_1h=c1, candles_5m=c5)
 
     def _log(self, msg: str):
         log.info(msg)
