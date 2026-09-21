@@ -16,7 +16,7 @@ from ..risk import RiskManager, SymbolSpec, ClampedAllocation
 from ..session import session_for
 from ..scalp import Engine, ScalpConfig
 from ..scalp.core import rows
-from .research_stats import summarize, breakdown, conversions
+from .research_stats import summarize, breakdown, conversions, realized
 
 TFS = ("M1", "M5", "M15", "H1", "H4", "D1")
 EVENT_DIR = Path(os.environ.get("MIBGOLD_EVENT_DIR", "backend/data"))
@@ -35,17 +35,24 @@ class StructuralOnly:
         return None
 
 
+def _ts(x):
+    if x is None:
+        return None
+    return pd.Timestamp(x)
+
+
 class Backtest:
     def __init__(self, m1: pd.DataFrame, spec: SymbolSpec, start_balance: float = 100.0, max_layers: int = 1,
                  budget_pct: float = 0.10, slippage_points: float = 5.0, warmup_bars: int = 300,
                  news_gate: Optional[NewsGate] = None, weights=None, bias_min_score=None, struct_oppose_score=None,
                  session_thresholds=None, session_min_aligned=None, min_risk_usd: float = 10.0, max_risk_usd: float = 100.0,
-                 fixed_lots: Optional[float] = None, sl_dollars=None, tp_dollars=None):
+                 fixed_lots: Optional[float] = None, sl_dollars=None, tp_dollars=None, test_cutoff=None):
         self.m1, self.spec = m1, spec
         self.slippage = slippage_points * spec.point
         self.warmup = warmup_bars
         self.gate = news_gate
         self.fixed_lots = fixed_lots
+        self.test_cutoff = _ts(test_cutoff) if test_cutoff is not None else None
         risk = RiskManager(spec, budget_pct=budget_pct, max_layers=max_layers,
                            allocation=ClampedAllocation(min_usd=min_risk_usd, max_usd=max_risk_usd))
         self.book = PositionBook(spec, risk, StructuralOnly(), start_balance, mode="backtest")
@@ -65,6 +72,8 @@ class Backtest:
         self.current_ts = None
         self.started_at = None
         self.runtime_sec = None
+        self.warmup_fires = 0
+        self.test_fires = 0
 
     def stop(self):
         self._stop = True
@@ -79,6 +88,11 @@ class Backtest:
             raise
         return self.result
 
+    def _in_test(self, now) -> bool:
+        if self.test_cutoff is None:
+            return True
+        return pd.Timestamp(now) >= self.test_cutoff
+
     def _run(self, on_progress):
         t0 = time.time()
         self.started_at = t0
@@ -87,8 +101,11 @@ class Backtest:
         ends = {tf: [c["ts"] + TF_SEC[tf] for c in candles[tf]] for tf in TF_SEC}
         m1c = candles["M1"]
         n = len(m1c)
-        warm = max(self.warmup, 400)
+        warm = max(int(self.warmup or 0), 400)
+        if warm >= n:
+            warm = max(400, n // 4)
         self.total_m1 = max(0, n - warm)
+        first_eval = None
         EVENT_DIR.mkdir(parents=True, exist_ok=True)
         ev_path = EVENT_DIR / f"{self.id}_events.jsonl"
         ev_f = open(ev_path, "w", encoding="utf-8")
@@ -99,7 +116,9 @@ class Backtest:
                     break
                 bar = m1c[i]
                 now_ts = int(bar["ts"] + 60)
-                now = pd.Timestamp(now_ts, unit="s", tz="UTC").to_pydatetime()
+                now = pd.Timestamp(now_ts, unit="s", tz="UTC").tz_convert(None).to_pydatetime() if False else pd.Timestamp(now_ts, unit="s", tz="UTC").to_pydatetime()
+                if first_eval is None:
+                    first_eval = now
                 hi, lo, close = bar["high"], bar["low"], bar["close"]
                 a = abs(hi - lo) or 0.3
                 for layer in self.book.layers:
@@ -120,9 +139,11 @@ class Backtest:
                     window[tf] = candles[tf][max(0, k - 400):k]
                 session = session_for(now)
                 decision = self.engine.evaluate(window, now, spread=self.spec.spread_price)
+                in_test = self._in_test(now)
                 buf.append(json.dumps({"t": now.isoformat(), "action": decision.get("action"),
                                        "reason": decision.get("reason"), "code": decision.get("code"),
-                                       "setup_id": decision.get("setup_id"), "session": session}, default=str) + "\n")
+                                       "setup_id": decision.get("setup_id"), "session": session,
+                                       "in_test": in_test}, default=str) + "\n")
                 if len(buf) >= 250:
                     ev_f.writelines(buf)
                     buf.clear()
@@ -136,23 +157,27 @@ class Backtest:
                         self._stamp(rec, now)
                         self.engine.on_exit(rec, now_ts)
                 elif decision.get("fire") and not gate.get("blocked"):
-                    direction = decision["direction"]
-                    entry = float(decision["entry"]) + self.slippage * (1 if direction == "long" else -1)
-                    sl = float(decision["stop"])
-                    lots = float(self.fixed_lots) if self.fixed_lots else 0.02
-                    sl_dist = abs(entry - sl)
-                    if lots > 0 and sl_dist > 0:
-                        risk_usd = lots * sl_dist * self.spec.contract_size
-                        opened = self.book.open_layer(direction, entry, sl, lots, risk_usd, now,
-                                                      {}, {"direction": direction}, decision.get("reason") or "SCALP_V1",
-                                                      session, {"direction": direction}, tp=None)
-                        self.engine.on_open(decision, entry, sl, now_ts)
-                        self._meta[opened.id] = dict(decision.get("meta") or {})
-                        self._meta[opened.id].update({
-                            "setup_id": decision.get("setup_id"), "vol_bucket": decision.get("vol_bucket"),
-                            "vwap": decision.get("vwap"), "session": session,
-                        })
-                        self._path[opened.id] = {"mfe": 0.0, "mae": 0.0}
+                    if not in_test:
+                        self.warmup_fires += 1
+                    else:
+                        self.test_fires += 1
+                        direction = decision["direction"]
+                        entry = float(decision["entry"]) + self.slippage * (1 if direction == "long" else -1)
+                        sl = float(decision["stop"])
+                        lots = float(self.fixed_lots) if self.fixed_lots else 0.02
+                        sl_dist = abs(entry - sl)
+                        if lots > 0 and sl_dist > 0:
+                            risk_usd = lots * sl_dist * self.spec.contract_size
+                            opened = self.book.open_layer(direction, entry, sl, lots, risk_usd, now,
+                                                          {}, {"direction": direction}, decision.get("reason") or "SCALP_V1",
+                                                          session, {"direction": direction}, tp=None)
+                            self.engine.on_open(decision, entry, sl, now_ts)
+                            self._meta[opened.id] = dict(decision.get("meta") or {})
+                            self._meta[opened.id].update({
+                                "setup_id": decision.get("setup_id"), "vol_bucket": decision.get("vol_bucket"),
+                                "vwap": decision.get("vwap"), "session": session, "in_test": True,
+                            })
+                            self._path[opened.id] = {"mfe": 0.0, "mae": 0.0}
                 snap = self.book.snapshot(close)
                 if opened or i % 30 == 0:
                     self.equity_curve.append({"time": now.isoformat(), "equity": snap["equity"], "balance": snap["balance"]})
@@ -170,14 +195,35 @@ class Backtest:
             end_ts = pd.Timestamp(int(last["ts"]) + 60, unit="s", tz="UTC").to_pydatetime()
             for layer in list(self.book.layers):
                 rec = self.book.close_layer(layer, float(last["close"]), "END_OF_DATA", end_ts)
+                rec["open_at_end"] = True
                 self._stamp(rec, end_ts)
         self.runtime_sec = round(time.time() - t0, 3)
         trades = self.book.closed
+        for t in trades:
+            t["in_test"] = bool((self._meta.get(t.get("id")) or {}).get("in_test", True))
         fn = dict(self.engine.funnel)
         bps = round(self.processed_m1 / self.runtime_sec, 1) if self.runtime_sec else None
+        loaded_start = str(self.m1["time"].iloc[0])
+        loaded_end = str(self.m1["time"].iloc[-1])
+        test_start = str(self.test_cutoff) if self.test_cutoff is not None else str(first_eval)
+        rz = realized(trades)
+        eod = [t for t in trades if str(t.get("exit_reason") or "").upper() == "END_OF_DATA"]
+        first_test = None
+        for t in rz:
+            first_test = t.get("timestamp") or t.get("entry_timestamp")
+            break
         self.result = {
             "id": self.id, "status": "done", "created": utcnow().isoformat(),
-            "range": {"start": str(self.m1["time"].iloc[0]), "end": str(self.m1["time"].iloc[-1]), "m1_bars": int(n)},
+            "range": {"start": test_start, "end": loaded_end, "m1_bars": int(self.processed_m1)},
+            "loaded_range": {"start": loaded_start, "end": loaded_end, "m1_bars": int(n)},
+            "window": {
+                "loaded_start": loaded_start, "loaded_end": loaded_end,
+                "test_start": test_start, "test_end": loaded_end,
+                "warmup_bars": warm, "first_evaluated_bar": str(first_eval),
+                "first_test_trade": first_test,
+                "warmup_fires": self.warmup_fires, "test_fires": self.test_fires,
+                "end_of_data": len(eod),
+            },
             "config": {
                 "book": "Scalp V1 research", "sl": "STRUCTURAL", "tp": "NONE", "trail": False,
                 "start_balance": self.book.start_balance, "spread": self.spec.spread_price,
@@ -192,6 +238,8 @@ class Backtest:
             "reject_codes": dict(self.engine.stats.get("reject_codes") or {}),
             "reject_reasons": dict(self.engine.stats.get("reject_reasons") or {}),
             "trades": trades,
+            "realized_trades": rz,
+            "end_of_data_trades": eod,
             "equity_curve": self.equity_curve[::max(1, len(self.equity_curve) // 1500)],
             "final_balance": round(self.book.balance, 2),
             "scalp_v1": dict(self.engine.stats),
@@ -228,7 +276,7 @@ class Backtest:
             "mfe_r": round(mfe / risk, 4), "mae_r": round(mae / risk, 4),
             "holding_time_seconds": hold,
             "holding_time_minutes": None if hold is None else round(hold / 60.0, 3),
-            "tp_mode": "none",
+            "tp_mode": "none", "in_test": bool(meta.get("in_test", True)),
         })
 
 
