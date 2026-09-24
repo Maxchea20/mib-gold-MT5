@@ -1,10 +1,11 @@
 """Live: Hunt C pullback + C-Fast V2.1 keys. Gold collar SL 2.5 / TP 5. No trail.
-Skips London / Friday / 19:00 UTC. Dead fills time-stopped at 20m / <0.15R."""
+Skips London / Friday / 19:00 UTC. Dead fills time-stopped at 20m / <0.15R.
+On MT5 the broker's SL/TP are the truth: the book mirrors broker positions and closes."""
 from __future__ import annotations
 import asyncio
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Callable, Awaitable, Dict, Optional
 import pandas as pd
 from .adapters.base import DataAdapter, Tick
@@ -16,6 +17,7 @@ from .engines import EngineSuite
 from .engines.utils import safe_atr
 from .news import NewsGate, NewsInterpreter
 from .risk import RiskManager, ClampedAllocation
+from .session import session_for
 from .strategy import TopDownStrategy, StrategyConfig
 from .trailing import TrailingTP, TrailingConfig
 from .bars_cache import load_m1, merge_live, upsert_m1
@@ -63,6 +65,10 @@ class LiveEngine:
         self.brain = TradeBrain(dead_min=float(os.environ.get("DEAD_FILL_MIN", "20")),
                                 dead_r=float(os.environ.get("DEAD_FILL_R", "0.15")))
         self.cfast = CFastV2(log=lambda m: self._log(m))
+        one_stop = self.fixed_lots * self.sl_dollars * self.spec.contract_size
+        self.max_daily_loss = float(os.environ.get("MAX_DAILY_LOSS_USD") or 3 * one_stop)
+        self.broker_sync = adapter.name == "mt5"
+        self.last_sync: Optional[datetime] = None
         self.last_exit_at: Optional[datetime] = None
         self.strategy = TopDownStrategy(EngineSuite(), Consensus(), live_strategy_config())
         self.auto_trade = os.environ.get("AUTO_TRADE", "true").lower() == "true"
@@ -79,8 +85,9 @@ class LiveEngine:
         self.events: list = []
         self.started = False
         cfg = self.strategy.cfg
-        log.info("live settings: lots=%s sl=$%s tp=$%s dead_fill=%sm/<%sR skip sessions=%s weekdays=%s hours_utc=%s",
-                 self.fixed_lots, self.sl_dollars, self.tp_dollars, self.brain.dead_min, self.brain.dead_r,
+        log.info("live settings: lots=%s sl=$%s tp=$%s max_daily_loss=$%.2f dead_fill=%sm/<%sR "
+                 "skip sessions=%s weekdays=%s hours_utc=%s",
+                 self.fixed_lots, self.sl_dollars, self.tp_dollars, self.max_daily_loss, self.brain.dead_min, self.brain.dead_r,
                  cfg.blocked_sessions, cfg.blocked_weekdays, cfg.blocked_hours_utc)
 
     def _symbol(self) -> str:
@@ -116,7 +123,7 @@ class LiveEngine:
     def status(self) -> dict:
         price = self.tick.mid if self.tick else 0.0
         snap = self.book.snapshot(price)
-        today = snap["balance"] - self.day_start_balance + snap["floating_pnl"]
+        today = self.today_pnl()
         return {
             "connection": self.connection, "mode": self.book.mode, "auto_trade": self.auto_trade,
             "symbol": self.spec.to_dict(), "tick": self.tick.to_dict() if self.tick else None,
@@ -125,6 +132,7 @@ class LiveEngine:
             "last_m5": self.last_m5.isoformat() if self.last_m5 else None,
             "book_rules": {"layers": self.risk.max_layers, "lot": self.fixed_lots,
                            "sl": self.sl_dollars, "tp": self.tp_dollars, "trail": False,
+                           "max_daily_loss": round(self.max_daily_loss, 2),
                            "dead_fill_min": self.brain.dead_min, "dead_fill_r": self.brain.dead_r,
                            "skip_sessions": list(self.strategy.cfg.blocked_sessions),
                            "skip_weekdays": list(self.strategy.cfg.blocked_weekdays),
@@ -136,7 +144,7 @@ class LiveEngine:
     def _tick_payload(self) -> dict:
         price = self.tick.mid
         snap = self.book.snapshot(price)
-        today = snap["balance"] - self.day_start_balance + snap["floating_pnl"]
+        today = self.today_pnl()
         return {"type": "tick", "tick": self.tick.to_dict(), "equity": snap["equity"], "balance": snap["balance"],
                 "floating_pnl": snap["floating_pnl"], "today_pnl": round(today, 2), "layers": snap["layers"],
                 "news": self.gate_state, "theses": [t.to_dict() for t in self.brain.theses.values()]}
@@ -160,18 +168,75 @@ class LiveEngine:
         self.tick = tick
         now = tick.time
         if self.day != now.date():
-            self.day, self.day_start_balance = now.date(), self.book.balance
+            self._new_day(now)
+        if self.broker_sync:
+            if self.last_sync is None or now - self.last_sync >= timedelta(seconds=1):
+                self.last_sync = now
+                await self._sync_broker(now)
         minute = now.replace(second=0, microsecond=0)
         if self.last_minute is None or minute > self.last_minute:
             await self._on_minute(minute, now)
-        for rec in self.book.on_bar(tick.ask, tick.bid, tick.mid, self.m5_atr, now):
-            if self.adapter.name == "mt5" and rec.get("ticket"):
-                try:
-                    self.adapter.close_position(rec["ticket"], rec.get("lots") or self.fixed_lots, rec.get("direction"))
-                except Exception:
-                    log.exception("mt5 close after book exit")
-            await self._closed(rec)
+        if not self.broker_sync:
+            for rec in self.book.on_tick(tick.bid, tick.ask, self.m5_atr, now):
+                await self._closed(rec)
         await self.broadcast(self._tick_payload())
+
+    def _new_day(self, now: datetime):
+        """Day P&L baseline. Subtracts P&L already banked today so a restart doesn't reset the loss limit."""
+        self.day = now.date()
+        midnight = datetime(now.year, now.month, now.day, tzinfo=timezone.utc)
+        banked = 0.0
+        try:
+            banked = self.adapter.realized_since(midnight) or 0.0
+        except Exception:
+            log.exception("realized_since failed")
+        self.day_start_balance = self.book.balance - banked
+
+    def today_pnl(self) -> float:
+        price = self.tick.mid if self.tick else 0.0
+        return self.book.balance - self.day_start_balance + self.risk.floating_pnl(self.book.layers, price)
+
+    def _position_ticket(self, order_ticket):
+        """Broker position ticket for a fresh fill (usually the order ticket; else the one new position)."""
+        pos = self.adapter.own_positions() or []
+        tickets = {p["ticket"] for p in pos}
+        if order_ticket in tickets:
+            return order_ticket
+        known = {l.ticket for l in self.book.layers if l.ticket}
+        fresh = [p for p in pos if p["ticket"] not in known]
+        return fresh[-1]["ticket"] if len(fresh) == 1 else order_ticket
+
+    async def _sync_broker(self, now: datetime):
+        """Mirror MT5: close book layers the broker closed, adopt this bot's positions the book doesn't know."""
+        pos = self.adapter.own_positions()
+        if pos is None:
+            return
+        live_tickets = {p["ticket"] for p in pos}
+        for layer in list(self.book.layers):
+            if not layer.ticket or layer.ticket in live_tickets:
+                continue
+            deal = self.adapter.closed_deal(layer.ticket) or {}
+            fallback = self.tick.bid if layer.sign > 0 else self.tick.ask
+            rec = self.book.close_layer(layer, deal.get("price") or fallback, deal.get("reason") or "BROKER_CLOSE",
+                                        deal.get("time") or now)
+            await self._closed(rec)
+        known = {l.ticket for l in self.book.layers if l.ticket}
+        for p in pos:
+            if p["ticket"] in known:
+                continue
+            sl, tp = p["sl"], p["tp"]
+            if not sl or not tp:
+                fsl, ftp = self._sl_tp(p["entry"], p["direction"])
+                sl, tp = sl or fsl, tp or ftp
+                res = self.adapter.modify_sl(p["ticket"], sl, tp)
+                if not res.get("ok"):
+                    self._log(f"ADOPT ticket {p['ticket']}: could not set SL/TP on broker: {res}")
+            risk_usd = abs(p["entry"] - sl) * p["lots"] * self.spec.contract_size
+            layer = self.book.open_layer(p["direction"], p["entry"], sl, p["lots"], risk_usd, p["time"], {},
+                                         {"direction": p["direction"]}, "Adopted from MT5", session_for(p["time"]), {},
+                                         ticket=p["ticket"], tp=tp)
+            self.brain.open_thesis(layer, self.analysis)
+            self._log(f"ADOPT MT5 ticket {p['ticket']} {p['direction']} {p['lots']} @ {p['entry']:.2f} SL {sl:.2f} TP {tp:.2f}")
 
     async def _on_minute(self, minute: datetime, now: datetime):
         self.last_minute = minute
@@ -197,6 +262,7 @@ class LiveEngine:
                 if not res.get("ok"):
                     self._log(f"TIME_STOP close failed for ticket {layer.ticket}: {res}")
                     continue
+                px = float(res.get("price") or px)
             rec = self.book.close_layer(layer, px, "TIME_STOP", now)
             self._log(f"TIME_STOP {layer.direction} after {verdict['age_min']:.0f}m r={verdict['r']:+.2f}")
             await self._closed(rec)
@@ -238,6 +304,9 @@ class LiveEngine:
         elif hunt.get("action") == "FIRE" and time_cut:
             blocked = time_cut
             self.cfast.active = None
+        elif hunt.get("action") == "FIRE" and self.today_pnl() <= -self.max_daily_loss:
+            blocked = f"Daily loss limit: {self.today_pnl():+.2f} <= -{self.max_daily_loss:.2f}"
+            self.cfast.active = None
         elif hunt.get("action") == "FIRE" and self.gate_state.get("blocked"):
             blocked = f"News gate: {self.gate_state.get('event', {}).get('title')}"
         elif hunt.get("action") == "FIRE" and not self.auto_trade:
@@ -263,6 +332,15 @@ class LiveEngine:
                 if order.get("ok"):
                     fill = float(order.get("price") or level)
                     sl, tp = self._sl_tp(fill, direction)
+                    if self.broker_sync:
+                        order["ticket"] = self._position_ticket(order.get("ticket"))
+                    if order.get("ticket") and self.adapter.name == "mt5":
+                        sl, tp = round(sl, self.spec.digits), round(tp, self.spec.digits)
+                        mod = self.adapter.modify_sl(order["ticket"], sl, tp)
+                        if not mod.get("ok"):
+                            # Keep the book on the broker's stops so the two never disagree.
+                            sl, tp = float(order.get("sl") or sl), float(order.get("tp") or tp)
+                            self._log(f"SL/TP move to fill failed {mod}; using broker SL {sl:.2f} TP {tp:.2f}")
                     risk_usd = lots * self.sl_dollars * self.spec.contract_size
                     opened = self.book.open_layer(direction, fill, sl, lots, risk_usd, now,
                                                   {}, {"direction": direction}, "Hunt pullback + V2.1",
@@ -300,7 +378,11 @@ class LiveEngine:
             if layer.id == layer_id and self.tick:
                 px = self.tick.bid if layer.sign > 0 else self.tick.ask
                 if self.adapter.name == "mt5" and layer.ticket:
-                    self.adapter.close_position(layer.ticket, layer.lots, layer.direction)
+                    res = self.adapter.close_position(layer.ticket, layer.lots, layer.direction)
+                    if not res.get("ok"):
+                        self._log(f"MANUAL close failed for ticket {layer.ticket}: {res}")
+                        return None
+                    px = float(res.get("price") or px)
                 rec = self.book.close_layer(layer, px, "MANUAL", self.tick.time)
                 await self._closed(rec)
                 return rec

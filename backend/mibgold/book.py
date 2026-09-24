@@ -66,6 +66,21 @@ class PositionBook:
             self.trailing.update(layer, close, atr)
         return closed
 
+    def on_tick(self, bid: float, ask: float, atr: float, ts: datetime) -> List[dict]:
+        """Live exits on the side you would actually close at: longs on bid, shorts on ask."""
+        closed = []
+        for layer in list(self.layers):
+            px = bid if layer.sign > 0 else ask
+            if layer.tp is not None and (px - layer.tp) * layer.sign >= 0:
+                closed.append(self.close_layer(layer, layer.tp, "STRUCTURE_TP", ts))
+                continue
+            hit = self.trailing.check_exit(layer, px, px)
+            if hit:
+                closed.append(self.close_layer(layer, hit[1], hit[0], ts))
+                continue
+            self.trailing.update(layer, px, atr)
+        return closed
+
     def open_records(self, price: float) -> List[dict]:
         return [open_record(l, price, self.spec.contract_size, self.mode) for l in self.layers]
 

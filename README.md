@@ -7,6 +7,8 @@ Desktop XAUUSD terminal. **One process.** Engine + UI on `http://127.0.0.1:8001`
 - Lot **0.02** · SL **$2.5** · TP **$5** · L1 only
 - Skip **London**, **Friday**, **19:00 UTC**
 - News gate **on** ±**30 min** around USD high-impact (NFP / CPI / FOMC)
+- Daily loss limit: no new trades after **3 full stop-losses** down on the UTC day (`MAX_DAILY_LOSS_USD`)
+- MT5 SL/TP are the source of truth; open bot positions are picked back up after a restart
 - Trail **off**. Minute brain time-stops dead fills at 20m / <0.15R
 - Auto-trade **on**
 

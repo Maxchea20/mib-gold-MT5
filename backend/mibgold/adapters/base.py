@@ -47,11 +47,23 @@ class DataAdapter(ABC):
     def close_position(self, ticket, lots: float, direction: str) -> dict:
         return {"ok": True, "paper": True}
 
-    def modify_sl(self, ticket, sl: float) -> dict:
+    def modify_sl(self, ticket, sl: float, tp: float = 0.0) -> dict:
         return {"ok": True, "paper": True}
 
     def positions(self) -> List[dict]:
         return []
+
+    def own_positions(self) -> Optional[List[dict]]:
+        """This bot's open broker positions as {ticket, direction, lots, entry, sl, tp, time}. None = not tracked."""
+        return None
+
+    def closed_deal(self, ticket) -> Optional[dict]:
+        """How a broker position closed: {price, reason, time}. None = unknown."""
+        return None
+
+    def realized_since(self, since: datetime) -> Optional[float]:
+        """This bot's realized broker P&L since `since` (UTC). None = not tracked."""
+        return None
 
     def shutdown(self):
         pass

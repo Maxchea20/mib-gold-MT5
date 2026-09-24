@@ -11,6 +11,7 @@ from ..risk import SymbolSpec
 
 log = logging.getLogger("mibgold.mt5")
 ORDER_COMMENT = "mib-gold"
+MAGIC = 20260601
 
 
 def _mt5_path() -> Optional[str]:
@@ -126,7 +127,7 @@ class MT5Adapter(DataAdapter):
                 "action": mt5.TRADE_ACTION_DEAL, "symbol": self.symbol, "volume": float(lots),
                 "type": mt5.ORDER_TYPE_BUY if buy else mt5.ORDER_TYPE_SELL,
                 "price": price, "sl": sl, "tp": tp,
-                "deviation": int(os.environ.get("MT5_DEVIATION_POINTS", "50")), "magic": 20260601,
+                "deviation": int(os.environ.get("MT5_DEVIATION_POINTS", "50")), "magic": MAGIC,
                 "comment": (comment or ORDER_COMMENT)[:31], "type_time": mt5.ORDER_TIME_GTC,
                 "type_filling": filling,
             }
@@ -148,12 +149,15 @@ class MT5Adapter(DataAdapter):
     def close_position(self, ticket, lots: float, direction: str) -> dict:
         mt5 = self.mt5
         tick = mt5.symbol_info_tick(self.symbol)
+        if tick is None:
+            return {"ok": False, "retcode": None, "comment": "no tick"}
         buy = direction == "long"
         req = {"action": mt5.TRADE_ACTION_DEAL, "symbol": self.symbol, "volume": float(lots), "position": int(ticket),
                "type": mt5.ORDER_TYPE_SELL if buy else mt5.ORDER_TYPE_BUY, "price": tick.bid if buy else tick.ask,
-               "deviation": 50, "magic": 20260601, "comment": "mib-gold close", "type_filling": mt5.ORDER_FILLING_IOC}
+               "deviation": 50, "magic": MAGIC, "comment": "mib-gold close", "type_filling": mt5.ORDER_FILLING_IOC}
         r = mt5.order_send(req)
-        return {"ok": r is not None and r.retcode == mt5.TRADE_RETCODE_DONE, "retcode": getattr(r, "retcode", None)}
+        return {"ok": r is not None and r.retcode == mt5.TRADE_RETCODE_DONE, "retcode": getattr(r, "retcode", None),
+                "price": getattr(r, "price", None), "comment": getattr(r, "comment", None)}
 
     def modify_sl(self, ticket, sl: float, tp: float = 0.0) -> dict:
         mt5 = self.mt5
@@ -166,6 +170,43 @@ class MT5Adapter(DataAdapter):
     def positions(self) -> List[dict]:
         pos = self.mt5.positions_get(symbol=self.symbol) or []
         return [p._asdict() for p in pos]
+
+    def _server_ts(self, secs) -> datetime:
+        return datetime.fromtimestamp(int(secs), tz=timezone.utc) - self.server_offset
+
+    def own_positions(self) -> Optional[List[dict]]:
+        pos = self.mt5.positions_get(symbol=self.symbol)
+        if pos is None:
+            log.warning("positions_get failed: %s", self.mt5.last_error())
+            return None
+        out = []
+        for p in pos:
+            if p.magic != MAGIC:
+                continue
+            out.append({"ticket": int(p.ticket), "direction": "long" if p.type == self.mt5.POSITION_TYPE_BUY else "short",
+                        "lots": float(p.volume), "entry": float(p.price_open), "sl": float(p.sl) or None,
+                        "tp": float(p.tp) or None, "time": self._server_ts(p.time)})
+        return out
+
+    def closed_deal(self, ticket) -> Optional[dict]:
+        deals = self.mt5.history_deals_get(position=int(ticket))
+        if not deals:
+            return None
+        exits = [d for d in deals if d.entry in (self.mt5.DEAL_ENTRY_OUT, self.mt5.DEAL_ENTRY_OUT_BY)]
+        if not exits:
+            return None
+        d = exits[-1]
+        reason = {getattr(self.mt5, "DEAL_REASON_SL", -1): "SL", getattr(self.mt5, "DEAL_REASON_TP", -1): "STRUCTURE_TP",
+                  getattr(self.mt5, "DEAL_REASON_SO", -1): "STOP_OUT"}.get(d.reason, "BROKER_CLOSE")
+        return {"price": float(d.price), "reason": reason, "time": self._server_ts(d.time),
+                "profit": float(d.profit + d.commission + d.swap)}
+
+    def realized_since(self, since: datetime) -> Optional[float]:
+        deals = self.mt5.history_deals_get(since + self.server_offset, datetime.now(timezone.utc) + self.server_offset + timedelta(days=1))
+        if deals is None:
+            return None
+        return float(sum(d.profit + d.commission + d.swap for d in deals
+                         if d.magic == MAGIC and d.entry in (self.mt5.DEAL_ENTRY_OUT, self.mt5.DEAL_ENTRY_OUT_BY)))
 
     def shutdown(self):
         self.mt5.shutdown()
