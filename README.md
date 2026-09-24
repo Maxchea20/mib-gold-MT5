@@ -4,7 +4,7 @@ Desktop XAUUSD terminal. **One process.** Engine + UI on `http://127.0.0.1:8001`
 
 ## Keeper book (live)
 
-- Lot **0.02** · SL **$1.5** · TP **$3** · L1 only
+- Lot **0.02** · SL **$2.5** · TP **$5** · L1 only
 - Skip **London**, **Friday**, **19:00 UTC**
 - News gate **on** ±**30 min** around USD high-impact (NFP / CPI / FOMC)
 - Trail **off**. Minute brain time-stops dead fills at 20m / <0.15R

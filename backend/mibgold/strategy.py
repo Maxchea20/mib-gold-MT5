@@ -80,17 +80,24 @@ class TopDownStrategy:
             "fire": fire, "gate_reason": gate_reason, "advisory": advisory,
         }
 
+    def time_cut(self, utc: datetime, session: str) -> Optional[str]:
+        """Calendar cuts: blocked weekday, UTC hour or session. None = clear to trade."""
+        if utc.weekday() in self.cfg.blocked_weekdays:
+            return "brain: weekday cut"
+        if utc.hour in self.cfg.blocked_hours_utc:
+            return f"brain: {utc.hour:02d}:00 UTC cut"
+        if session in self.cfg.blocked_sessions:
+            return f"brain: {session} cut"
+        return None
+
     def _brain_decide(self, utc, session, bias, m15, entry_cons) -> tuple:
         """M5 score fire. Calendar cuts off. H1/M15 only veto a strong opposite."""
         m5d = entry_cons.get("direction") or "neutral"
         score = float(entry_cons.get("score") or 0.0)
         aligned = int(entry_cons.get("aligned") or 0)
-        if utc.weekday() in self.cfg.blocked_weekdays:
-            return False, "brain: weekday cut"
-        if utc.hour in self.cfg.blocked_hours_utc:
-            return False, f"brain: {utc.hour:02d}:00 UTC cut"
-        if session in self.cfg.blocked_sessions:
-            return False, f"brain: {session} cut"
+        cut = self.time_cut(utc, session)
+        if cut:
+            return False, cut
         if m5d == "neutral":
             return False, "brain: M5 no side"
         if abs(score) < self.cfg.fire_min_score:

@@ -109,12 +109,13 @@ class MT5Adapter(DataAdapter):
             return {"ok": False, "comment": "no tick", "retcode": None}
         buy = (direction or "").lower() in ("long", "buy")
         price = float(tick.ask if buy else tick.bid)
-        sl_dist = float(os.environ.get("SL_DOLLARS", "1.0"))
+        sl_dist = float(os.environ.get("SL_DOLLARS", "2.5"))
+        tp_dist = float(os.environ.get("TP_DOLLARS", "5.0"))
         if sl is None:
             sl = price - sl_dist if buy else price + sl_dist
         sl = float(sl)
         if not tp:
-            tp = price + sl_dist * 3.0 if buy else price - sl_dist * 3.0
+            tp = price + tp_dist if buy else price - tp_dist
         tp = float(tp)
         digits = self.symbol_spec().digits
         sl, tp, price = round(sl, digits), round(tp, digits), round(price, digits)

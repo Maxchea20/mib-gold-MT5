@@ -1,9 +1,10 @@
-"""Live: Hunt C pullback + C-Fast V2.1 keys. Gold collar SL 2.5 / TP 5. No trail."""
+"""Live: Hunt C pullback + C-Fast V2.1 keys. Gold collar SL 2.5 / TP 5. No trail.
+Skips London / Friday / 19:00 UTC. Dead fills time-stopped at 20m / <0.15R."""
 from __future__ import annotations
 import asyncio
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Callable, Awaitable, Dict, Optional
 import pandas as pd
 from .adapters.base import DataAdapter, Tick
@@ -23,6 +24,20 @@ from .hunt.cfast_v2 import CFastV2
 
 log = logging.getLogger("mibgold.live")
 TFS = ("M5", "M15", "H1", "H4", "D1")
+
+
+def _env_list(name: str, default: str, cast=str) -> tuple:
+    raw = os.environ.get(name, default)
+    return tuple(cast(x.strip().lower() if cast is str else x.strip()) for x in raw.split(",") if x.strip())
+
+
+def live_strategy_config() -> StrategyConfig:
+    """Keeper book calendar cuts. Weekdays: Mon=0 .. Fri=4. Set an env var to empty to trade through."""
+    return StrategyConfig(
+        blocked_sessions=_env_list("BLOCKED_SESSIONS", "london"),
+        blocked_weekdays=_env_list("BLOCKED_WEEKDAYS", "4", int),
+        blocked_hours_utc=_env_list("BLOCKED_HOURS_UTC", "19", int),
+    )
 
 
 class LiveEngine:
@@ -45,11 +60,11 @@ class LiveEngine:
         self.fixed_lots = float(os.environ.get("FIXED_LOTS", "0.01"))
         self.sl_dollars = float(os.environ.get("SL_DOLLARS", "2.5"))
         self.tp_dollars = float(os.environ.get("TP_DOLLARS", "5.0"))
-        self.brain = TradeBrain(dead_min=float(os.environ.get("DEAD_FILL_MIN", "2")),
+        self.brain = TradeBrain(dead_min=float(os.environ.get("DEAD_FILL_MIN", "20")),
                                 dead_r=float(os.environ.get("DEAD_FILL_R", "0.15")))
         self.cfast = CFastV2(log=lambda m: self._log(m))
         self.last_exit_at: Optional[datetime] = None
-        self.strategy = TopDownStrategy(EngineSuite(), Consensus(), StrategyConfig())
+        self.strategy = TopDownStrategy(EngineSuite(), Consensus(), live_strategy_config())
         self.auto_trade = os.environ.get("AUTO_TRADE", "true").lower() == "true"
         self.history_bars = int(os.environ.get("HISTORY_M1_BARS", "50000"))
         self.tick: Optional[Tick] = None
@@ -63,6 +78,10 @@ class LiveEngine:
         self.day: Optional[datetime.date] = None
         self.events: list = []
         self.started = False
+        cfg = self.strategy.cfg
+        log.info("live settings: lots=%s sl=$%s tp=$%s dead_fill=%sm/<%sR skip sessions=%s weekdays=%s hours_utc=%s",
+                 self.fixed_lots, self.sl_dollars, self.tp_dollars, self.brain.dead_min, self.brain.dead_r,
+                 cfg.blocked_sessions, cfg.blocked_weekdays, cfg.blocked_hours_utc)
 
     def _symbol(self) -> str:
         return getattr(self.adapter, "symbol", None) or self.spec.symbol
@@ -106,6 +125,10 @@ class LiveEngine:
             "last_m5": self.last_m5.isoformat() if self.last_m5 else None,
             "book_rules": {"layers": self.risk.max_layers, "lot": self.fixed_lots,
                            "sl": self.sl_dollars, "tp": self.tp_dollars, "trail": False,
+                           "dead_fill_min": self.brain.dead_min, "dead_fill_r": self.brain.dead_r,
+                           "skip_sessions": list(self.strategy.cfg.blocked_sessions),
+                           "skip_weekdays": list(self.strategy.cfg.blocked_weekdays),
+                           "skip_hours_utc": list(self.strategy.cfg.blocked_hours_utc),
                            "version": "HUNT_PULLBACK_2.5_5"},
             "theses": [t.to_dict() for t in self.brain.theses.values()],
         }
@@ -156,8 +179,27 @@ class LiveEngine:
         self.gate_state = self.gate.check(now)
         await self.interpreter.poll(now)
         self.rebuild_frames(minute)
+        await self._review_open(now)
         await self._decide(now)
         await self.broadcast({"type": "bars", "bars": {tf: self.chart(tf, 2) for tf in TFS}, "news": self.gate_state})
+
+    async def _review_open(self, now: datetime):
+        """Minute brain: flatten dead fills (open >= DEAD_FILL_MIN and under DEAD_FILL_R)."""
+        if not self.tick:
+            return
+        for layer in list(self.book.layers):
+            px = self.tick.bid if layer.sign > 0 else self.tick.ask
+            verdict = self.brain.review(layer, px, now, self.spec.contract_size)
+            if verdict["action"] != "time_stop":
+                continue
+            if self.adapter.name == "mt5" and layer.ticket:
+                res = self.adapter.close_position(layer.ticket, layer.lots, layer.direction)
+                if not res.get("ok"):
+                    self._log(f"TIME_STOP close failed for ticket {layer.ticket}: {res}")
+                    continue
+            rec = self.book.close_layer(layer, px, "TIME_STOP", now)
+            self._log(f"TIME_STOP {layer.direction} after {verdict['age_min']:.0f}m r={verdict['r']:+.2f}")
+            await self._closed(rec)
 
     def _run_hunt(self):
         c15 = frames_to_candles(self.frames.get("M15"))
@@ -189,8 +231,13 @@ class LiveEngine:
             self.analysis["gate_reason"] = (hunt.get("why_state") or ["WAIT"])[0]
         blocked = self.analysis["gate_reason"]
         opened = None
+        time_cut = self.strategy.time_cut(now.astimezone(timezone.utc) if now.tzinfo else now,
+                                          self.analysis.get("session"))
         if self.book.layers:
             blocked = blocked or "clip already open"
+        elif hunt.get("action") == "FIRE" and time_cut:
+            blocked = time_cut
+            self.cfast.active = None
         elif hunt.get("action") == "FIRE" and self.gate_state.get("blocked"):
             blocked = f"News gate: {self.gate_state.get('event', {}).get('title')}"
         elif hunt.get("action") == "FIRE" and not self.auto_trade:
