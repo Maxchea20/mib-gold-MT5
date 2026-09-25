@@ -77,12 +77,13 @@ MT5_PATH=C:\Program Files\MetaTrader 5\terminal64.exe
 AUTO_TRADE=true
 MAX_LAYERS=1
 FIXED_LOTS=0.02
-SL_DOLLARS=1.5
-TP_DOLLARS=3
+SL_DOLLARS=2.5
+TP_DOLLARS=5
+DEAD_FILL_MIN=45
 NEWS_WINDOW_BEFORE_MIN=30
 NEWS_WINDOW_AFTER_MIN=30
 ```
 
-Install `MetaTrader5` in the same venv. Terminal logged in. Algo Trading ON. Then `python run_app.py`.
+Install `MetaTrader5` in the same venv (`pip install MetaTrader5`). Terminal logged in. Algo Trading ON. Then `python run_app.py`.
 
-Status `/api/status` should show `auto_trade: true`, `book_rules` lot 0.02 / sl 1.5 / tp 3, and `news.blocked` around prints.
+Status `/api/status` should show `auto_trade: true`, `book_rules` lot 0.02 / sl 2.5 / tp 5, and `news.blocked` around prints.
