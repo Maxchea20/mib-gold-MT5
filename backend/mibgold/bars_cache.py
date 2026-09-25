@@ -5,11 +5,36 @@ from pathlib import Path
 from typing import Optional
 import sqlite3
 import pandas as pd
+from .servertime import series_server_to_utc
+
+
+TIME_BASIS = "utc"
+
+
+def _migrate_time_basis(conn: sqlite3.Connection) -> None:
+    """Bars used to be stored in broker server time. Park those in a backup table; the cache
+    refills in true UTC from the data folder and MT5 history."""
+    conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
+    row = conn.execute("SELECT value FROM meta WHERE key='time_basis'").fetchone()
+    if row and row[0] == TIME_BASIS:
+        return
+    has_bars = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='m1_bars'").fetchone()
+    has_backup = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='m1_bars_server_time_backup'").fetchone()
+    if has_bars:
+        if has_backup:
+            conn.execute("DROP TABLE m1_bars")
+        else:
+            conn.execute("ALTER TABLE m1_bars RENAME TO m1_bars_server_time_backup")
+        conn.execute("DROP INDEX IF EXISTS idx_m1_symbol_ts")
+    conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES ('time_basis', ?)", (TIME_BASIS,))
+    conn.commit()
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path))
+    _migrate_time_basis(conn)
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS m1_bars (
@@ -41,7 +66,7 @@ def load_mt5_csv(path: str | Path) -> pd.DataFrame:
     df = pd.read_csv(path, sep=sep, engine="python")
     df.columns = [str(c).strip("<>").lower() for c in df.columns]
     if "date" in df.columns and "time" in df.columns:
-        df["time"] = pd.to_datetime(df["date"].astype(str) + " " + df["time"].astype(str), utc=True)
+        df["time"] = series_server_to_utc(pd.to_datetime(df["date"].astype(str) + " " + df["time"].astype(str), utc=True))
         if "tickvol" in df.columns:
             df = df.rename(columns={"tickvol": "tick_volume"})
     else:

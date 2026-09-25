@@ -39,7 +39,7 @@ class Thesis:
 class TradeBrain:
     """Watch open layers every minute. Kill dead fills. Leave runners to hard TP."""
 
-    def __init__(self, dead_min: float = 20.0, dead_r: float = 0.15):
+    def __init__(self, dead_min: float = 45.0, dead_r: float = 0.15):
         self.dead_min = dead_min
         self.dead_r = dead_r
         self.theses: dict[str, Thesis] = {}

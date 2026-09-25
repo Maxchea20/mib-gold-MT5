@@ -1,5 +1,5 @@
 """Live: Hunt C pullback + C-Fast V2.1 keys. Gold collar SL 2.5 / TP 5. No trail.
-Skips London / Friday / 19:00 UTC. Dead fills time-stopped at 20m / <0.15R.
+Skips London / Friday / 19:00 UTC. Dead fills time-stopped at 45m / <0.15R.
 On MT5 the broker's SL/TP are the truth: the book mirrors broker positions and closes."""
 from __future__ import annotations
 import asyncio
@@ -62,7 +62,7 @@ class LiveEngine:
         self.fixed_lots = float(os.environ.get("FIXED_LOTS", "0.01"))
         self.sl_dollars = float(os.environ.get("SL_DOLLARS", "2.5"))
         self.tp_dollars = float(os.environ.get("TP_DOLLARS", "5.0"))
-        self.brain = TradeBrain(dead_min=float(os.environ.get("DEAD_FILL_MIN", "20")),
+        self.brain = TradeBrain(dead_min=float(os.environ.get("DEAD_FILL_MIN", "45")),
                                 dead_r=float(os.environ.get("DEAD_FILL_R", "0.15")))
         self.cfast = CFastV2(log=lambda m: self._log(m))
         one_stop = self.fixed_lots * self.sl_dollars * self.spec.contract_size

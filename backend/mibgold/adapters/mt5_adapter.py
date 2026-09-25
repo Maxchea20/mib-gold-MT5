@@ -2,12 +2,14 @@
 from __future__ import annotations
 import logging
 import os
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional, List
 import pandas as pd
 from .base import DataAdapter, Tick
 from ..risk import SymbolSpec
+from ..servertime import HOUR, detect_offset_hours, fixed_offset_hours, ny_close_offset_hours
 
 log = logging.getLogger("mibgold.mt5")
 ORDER_COMMENT = "mib-gold"
@@ -37,7 +39,8 @@ class MT5Adapter(DataAdapter):
         import MetaTrader5 as mt5
         self.mt5 = mt5
         self.symbol = symbol or os.environ.get("MT5_SYMBOL", "GOLD")
-        self.server_offset = timedelta(hours=float(os.environ.get("MT5_SERVER_UTC_OFFSET_HOURS", "0")))
+        self.fixed_offset = fixed_offset_hours()
+        self.detected_offset: Optional[int] = None
         self._spec: Optional[SymbolSpec] = None
 
     def connect(self) -> dict:
@@ -52,6 +55,9 @@ class MT5Adapter(DataAdapter):
             raise RuntimeError(f"MT5 initialize failed: {self.mt5.last_error()} path={kwargs.get('path')}")
         if not self.mt5.symbol_select(self.symbol, True):
             raise RuntimeError(f"symbol_select({self.symbol}) failed: {self.mt5.last_error()}")
+        self.tick()
+        log.info("MT5 server clock: fixed=%s detected=%s -> now UTC%+g",
+                 self.fixed_offset, self.detected_offset, self.offset_hours(datetime.now(timezone.utc)))
         info = self.mt5.terminal_info()._asdict()
         return {"connected": True, "mode": "mt5", "terminal": info.get("name"), "build": info.get("build"),
                 "account": self.account(), "symbol": self.symbol_spec().to_dict()}
@@ -73,8 +79,26 @@ class MT5Adapter(DataAdapter):
         return {"login": a.login, "server": a.server, "currency": a.currency, "balance": a.balance, "equity": a.equity,
                 "leverage": a.leverage, "hedging": a.margin_mode == self.mt5.ACCOUNT_MARGIN_MODE_RETAIL_HEDGING}
 
+    def offset_hours(self, utc: datetime) -> float:
+        """Server clock offset at `utc`. Env pin wins; else New York close rule unless the live clock disagrees."""
+        if self.fixed_offset is not None:
+            return self.fixed_offset
+        rule_now = ny_close_offset_hours(datetime.now(timezone.utc))
+        if self.detected_offset is None or self.detected_offset == rule_now:
+            return ny_close_offset_hours(utc)
+        return self.detected_offset
+
+    def _server_delta(self, server_secs: float) -> timedelta:
+        return timedelta(hours=self.offset_hours(datetime.fromtimestamp(server_secs - 3 * HOUR, tz=timezone.utc)))
+
+    def _utc_to_server(self, utc: datetime) -> datetime:
+        return utc + timedelta(hours=self.offset_hours(utc))
+
     def _to_utc(self, series: pd.Series) -> pd.Series:
-        return pd.to_datetime(series, unit="s", utc=True) - self.server_offset
+        t = pd.to_datetime(series, unit="s", utc=True)
+        days = t.dt.floor("D")
+        off = {d: self.offset_hours(d.to_pydatetime()) for d in days.unique()}
+        return t - pd.to_timedelta(days.map(off), unit="h")
 
     def _frame(self, rates) -> pd.DataFrame:
         if rates is None or len(rates) == 0:
@@ -87,7 +111,12 @@ class MT5Adapter(DataAdapter):
         t = self.mt5.symbol_info_tick(self.symbol)
         if t is None:
             return None
-        return Tick(datetime.fromtimestamp(t.time, tz=timezone.utc) - self.server_offset, t.bid, t.ask)
+        if self.fixed_offset is None:
+            det = detect_offset_hours(t.time, time.time())
+            if det is not None and det != self.detected_offset:
+                log.info("MT5 server clock detected at UTC%+d (was %s)", det, self.detected_offset)
+                self.detected_offset = det
+        return Tick(self._server_ts(t.time), t.bid, t.ask)
 
     def m1_history(self, bars: int) -> pd.DataFrame:
         want = max(200, min(int(bars or 8000), 100000))
@@ -100,7 +129,7 @@ class MT5Adapter(DataAdapter):
         return self._frame(rates)
 
     def m1_range(self, start: datetime, end: datetime) -> pd.DataFrame:
-        rates = self.mt5.copy_rates_range(self.symbol, self.mt5.TIMEFRAME_M1, start + self.server_offset, end + self.server_offset)
+        rates = self.mt5.copy_rates_range(self.symbol, self.mt5.TIMEFRAME_M1, self._utc_to_server(start), self._utc_to_server(end))
         return self._frame(rates)
 
     def place_order(self, direction: str, lots: float, sl: float, comment: str = ORDER_COMMENT, tp: float = 0.0) -> dict:
@@ -172,7 +201,7 @@ class MT5Adapter(DataAdapter):
         return [p._asdict() for p in pos]
 
     def _server_ts(self, secs) -> datetime:
-        return datetime.fromtimestamp(int(secs), tz=timezone.utc) - self.server_offset
+        return datetime.fromtimestamp(int(secs), tz=timezone.utc) - self._server_delta(secs)
 
     def own_positions(self) -> Optional[List[dict]]:
         pos = self.mt5.positions_get(symbol=self.symbol)
@@ -202,7 +231,7 @@ class MT5Adapter(DataAdapter):
                 "profit": float(d.profit + d.commission + d.swap)}
 
     def realized_since(self, since: datetime) -> Optional[float]:
-        deals = self.mt5.history_deals_get(since + self.server_offset, datetime.now(timezone.utc) + self.server_offset + timedelta(days=1))
+        deals = self.mt5.history_deals_get(self._utc_to_server(since), self._utc_to_server(datetime.now(timezone.utc)) + timedelta(days=1))
         if deals is None:
             return None
         return float(sum(d.profit + d.commission + d.swap for d in deals

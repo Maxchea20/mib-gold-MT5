@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 import numpy as np
 import pandas as pd
+from ..servertime import series_server_to_utc
 from .base import DataAdapter, Tick
 from ..risk import SymbolSpec
 from ..session import session_for
@@ -49,7 +50,7 @@ def load_csv(path: str) -> pd.DataFrame:
     df = pd.read_csv(path, sep=sep, engine="python")
     df.columns = [c.strip("<>").lower() for c in df.columns]
     if "date" in df.columns and "time" in df.columns:
-        df["time"] = pd.to_datetime(df["date"] + " " + df["time"], utc=True)
+        df["time"] = series_server_to_utc(pd.to_datetime(df["date"] + " " + df["time"], utc=True))
         df = df.rename(columns={"tickvol": "tick_volume"})
     else:
         df["time"] = pd.to_datetime(df["time"], utc=True)

@@ -9,7 +9,7 @@ Desktop XAUUSD terminal. **One process.** Engine + UI on `http://127.0.0.1:8001`
 - News gate **on** ±**30 min** around USD high-impact (NFP / CPI / FOMC)
 - Daily loss limit: no new trades after **3 full stop-losses** down on the UTC day (`MAX_DAILY_LOSS_USD`)
 - MT5 SL/TP are the source of truth; open bot positions are picked back up after a restart
-- Trail **off**. Minute brain time-stops dead fills at 20m / <0.15R
+- Trail **off**. Minute brain time-stops dead fills at 45m / <0.15R
 - Auto-trade **on**
 
 Copy `backend/.env.example` to `backend/.env` and fill MT5 login/path.
@@ -19,6 +19,28 @@ python run_app.py
 ```
 
 Open `http://127.0.0.1:8001`. Leave Auto-trade enabled. MT5 must be logged in with Algo Trading on.
+
+## Broker clock
+
+MT5 bars and ticks come in broker server time. The app converts everything to UTC
+(sessions, skip hours, news gate). Default: New York close clock (UTC+3 in US summer,
+UTC+2 otherwise), checked against live ticks. Pin a fixed clock with
+`MT5_SERVER_UTC_OFFSET_HOURS` only if your broker runs something else.
+
+On first start after this change the bar cache (`backend/data/mibgold.sqlite`) keeps its
+old server-time bars in `m1_bars_server_time_backup` and refills in UTC.
+
+## Backtest the live rules
+
+Plain Python, no pandas needed:
+
+```
+cd backend
+python -m mibgold.backtest.replay_live "data/GOLD#_M1_202606031118_202609141118.csv"
+python -m mibgold.backtest.replay_live "data/GOLD#_M1_....csv" --sl 3 --tp 6 --no-time-stop
+```
+
+Includes spread, calendar cuts, time-stop and daily loss limit. Not modelled: news gate, commission.
 
 ## Layout
 
